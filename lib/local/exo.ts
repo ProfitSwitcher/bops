@@ -1,10 +1,10 @@
 /**
  * exo (exo-labs) cluster state. GET /state is the only inventory we trust.
  * A model is eligible when at least one node has DownloadCompleted for it and
- * no node is still downloading it or has failed. exo can place a single-node
- * model on the machine that holds the weights (Kimi and Qwen3-Coder are often
- * complete on Studio 1 only). A partial download is never requested, so a chat
- * cannot start a Hugging Face fetch.
+ * no node has DownloadOngoing or DownloadFailed. A leftover DownloadPending on
+ * another node does not block it: placement stays on the nodes that already
+ * have the weights. A partial download is never requested, so a chat cannot
+ * start a Hugging Face fetch.
  */
 
 export type ExoInventory = { downloaded: string[]; downloading: string[] };
@@ -35,14 +35,58 @@ export function exoLoadTimeoutMs(): number {
   return Number.isFinite(n) && n >= 1_000 ? n : 10 * 60_000;
 }
 
+export type ExoPlacement = { sharding: string; instance_meta: string; min_nodes: number; nodes: string[] };
+
 /**
- * How exo places a model across the Thunderbolt pair, then on one node if tensor
- * placement is refused. exo's POST /place_instance takes these fields.
+ * Pick a preview whose every node already has the model. A multi-node tensor
+ * placement is used only when each of those nodes is complete. Otherwise the
+ * pipeline preview on the single node that has the weights wins. A preview that
+ * would include any other node is dropped, so place_instance cannot start a download.
  */
-export const EXO_PLACEMENTS = [
-  { sharding: "Tensor", instance_meta: "MlxJaccl", min_nodes: 2 },
-  { sharding: "Pipeline", instance_meta: "MlxRing", min_nodes: 1 },
-] as const;
+export function chooseExoPlacement(body: unknown, completeNodes: readonly string[]): ExoPlacement | undefined {
+  const have = new Set(completeNodes.map((n) => n.toLowerCase()));
+  const safe = parsePreviews(body).filter((p) => !p.error && p.nodes.length > 0 && p.nodes.every((n) => have.has(n.toLowerCase())));
+  const multi = safe.filter((p) => p.nodes.length >= 2);
+  const pool = multi.length ? multi : safe.filter((p) => p.nodes.length === 1);
+  if (!pool.length) return undefined;
+  const best = pool.slice().sort((a, b) => rankPlacement(b, multi.length > 0) - rankPlacement(a, multi.length > 0))[0];
+  return { sharding: best.sharding, instance_meta: best.instance_meta, min_nodes: best.nodes.length, nodes: best.nodes };
+}
+
+function rankPlacement(p: { sharding: string; instance_meta: string; nodes: string[] }, multi: boolean): number {
+  if (multi) {
+    const tensor = p.sharding.toLowerCase() === "tensor" ? 3 : 0;
+    const jaccl = /jaccl/i.test(p.instance_meta) ? 1 : 0;
+    return p.nodes.length * 10 + tensor + jaccl;
+  }
+  const pipeline = p.sharding.toLowerCase() === "pipeline" ? 3 : 0;
+  const ring = /ring/i.test(p.instance_meta) ? 1 : 0;
+  return pipeline + ring;
+}
+
+function parsePreviews(body: unknown): { sharding: string; instance_meta: string; nodes: string[]; error: string }[] {
+  const root = Array.isArray(body) ? body : body && typeof body === "object" ? ((body as Record<string, unknown>).previews ?? (body as Record<string, unknown>).data) : [];
+  if (!Array.isArray(root)) return [];
+  return root.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const rec = item as Record<string, unknown>;
+    const sharding = String(rec.sharding ?? "");
+    const instance_meta = String(rec.instanceMeta ?? rec.instance_meta ?? "");
+    if (!sharding || !instance_meta) return [];
+    const err = rec.error;
+    return [{ sharding, instance_meta, nodes: nodesOfPreview(rec), error: typeof err === "string" ? err : err ? String(err) : "" }];
+  });
+}
+
+function nodesOfPreview(rec: Record<string, unknown>): string[] {
+  const inst = unwrapInstance(rec.instance);
+  const shards = (inst.shardAssignments ?? inst.shard_assignments) as Record<string, unknown> | undefined;
+  const map = (shards?.nodeToRunner ?? shards?.node_to_runner) as Record<string, unknown> | undefined;
+  if (map && typeof map === "object") return Object.keys(map);
+  const mem = (rec.memoryDeltaByNode ?? rec.memory_delta_by_node) as Record<string, unknown> | undefined;
+  if (mem && typeof mem === "object") return Object.keys(mem);
+  return [];
+}
 
 export type ExoInstance = { id: string; modelId: string; ready: boolean; failed?: string };
 
@@ -162,11 +206,11 @@ export async function ensureExoInstance(opts: {
     return;
   }
 
-  const place = async (placement: (typeof EXO_PLACEMENTS)[number]) => {
+  const place = async (placement: ExoPlacement) => {
     const res = await fetchImpl(`${opts.origin}/place_instance`, {
       method: "POST",
       headers: { ...headers, "Content-Type": "application/json" },
-      body: JSON.stringify({ model_id: opts.model, ...placement }),
+      body: JSON.stringify({ model_id: opts.model, sharding: placement.sharding, instance_meta: placement.instance_meta, min_nodes: placement.min_nodes }),
       signal: AbortSignal.timeout(Math.min(60_000, timeoutMs)),
     });
     if (res.ok) return "";
@@ -174,17 +218,26 @@ export async function ensureExoInstance(opts: {
   };
 
   const tryPlace = async () => {
-    let memory = "";
-    let other = "";
-    for (const placement of EXO_PLACEMENTS) {
-      const detail = await place(placement);
-      if (!detail) return "placed" as const;
-      if (wontFit(detail)) memory = detail;
-      else other = detail;
-      const now = await stateOf(opts.origin, headers, fetchImpl, timeoutMs).catch(() => null);
-      if (now && exoInstanceFor(now, opts.model)) return "exists" as const;
+    const body = await stateOf(opts.origin, headers, fetchImpl, timeoutMs);
+    const nodes = exoModelNodes(body, opts.model);
+    if (nodes.blocked) throw new Error(`${opts.model} is still downloading on exo`);
+    if (!nodes.complete.length) throw new Error(`${opts.model} is not fully downloaded on an exo node`);
+    const previewRes = await fetchImpl(`${opts.origin}/instance/previews?model_id=${encodeURIComponent(opts.model)}`, {
+      headers,
+      signal: AbortSignal.timeout(Math.min(15_000, timeoutMs)),
+    });
+    let choice: ExoPlacement | undefined;
+    if (previewRes.ok) {
+      choice = chooseExoPlacement(await previewRes.json().catch(() => null), nodes.complete);
+      if (!choice) throw new Error(`${opts.model} would need a download on a node that does not have it. Not placing it.`);
+    } else {
+      choice = { sharding: "Pipeline", instance_meta: "MlxRing", min_nodes: 1, nodes: nodes.complete.slice(0, 1) };
     }
-    return { memory, other };
+    const detail = await place(choice);
+    if (!detail) return "placed" as const;
+    const now = await stateOf(opts.origin, headers, fetchImpl, timeoutMs).catch(() => null);
+    if (now && exoInstanceFor(now, opts.model)) return "exists" as const;
+    return wontFit(detail) ? { memory: detail, other: "" } : { memory: "", other: detail };
   };
 
   let result = await tryPlace();
@@ -212,39 +265,91 @@ export async function ensureExoInstance(opts: {
   throw new Error(result.memory || result.other || `exo did not place ${opts.model}`);
 }
 
+/** Per-node download status. Pending is not a block: another node's completed copy can still be placed. */
+export function exoModelNodes(body: unknown, model: string): { complete: string[]; pending: string[]; blocked: boolean } {
+  const name = model.toLowerCase();
+  const byNode = new Map<string, Set<DownloadStatus>>();
+  for (const entry of downloadEntries(body)) {
+    if (entry.model.toLowerCase() !== name) continue;
+    const set = byNode.get(entry.node) ?? new Set();
+    set.add(entry.status);
+    byNode.set(entry.node, set);
+  }
+  const complete: string[] = [];
+  const pending: string[] = [];
+  let blocked = false;
+  for (const [node, set] of byNode) {
+    if (set.has("ongoing") || set.has("failed")) {
+      blocked = true;
+      continue;
+    }
+    if (set.has("complete")) complete.push(node);
+    else if (set.has("pending")) pending.push(node);
+  }
+  return { complete, pending, blocked };
+}
+
 export function modelsFromExoState(body: unknown): ExoInventory {
-  const done = new Map<string, number>();
-  const busy = new Set<string>();
+  const rows = new Map<string, { complete: boolean; blocked: boolean }>();
+  for (const entry of downloadEntries(body)) {
+    const row = rows.get(entry.model) ?? { complete: false, blocked: false };
+    if (entry.status === "complete") row.complete = true;
+    if (entry.status === "ongoing" || entry.status === "failed") row.blocked = true;
+    rows.set(entry.model, row);
+  }
+  const downloaded: string[] = [];
+  const downloading: string[] = [];
+  for (const [id, row] of rows) {
+    if (row.blocked) downloading.push(id);
+    else if (row.complete) downloaded.push(id);
+  }
+  return { downloaded, downloading };
+}
+
+type DownloadStatus = "complete" | "pending" | "ongoing" | "failed";
+
+function downloadEntries(body: unknown): { node: string; model: string; status: DownloadStatus }[] {
   const root = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const downloads = root.downloads;
-  const groups = downloads && typeof downloads === "object" ? Object.values(downloads as Record<string, unknown>) : [];
-  for (const group of groups) {
+  if (!downloads || typeof downloads !== "object") return [];
+  const out: { node: string; model: string; status: DownloadStatus }[] = [];
+  for (const [nodeKey, group] of Object.entries(downloads as Record<string, unknown>)) {
     const items = Array.isArray(group) ? group : group ? [group] : [];
     for (const item of items) {
       const found = classify(item);
-      if (!found.id) continue;
-      if (found.done) done.set(found.id, (done.get(found.id) ?? 0) + 1);
-      else busy.add(found.id);
+      if (!found.id || !found.status) continue;
+      out.push({ node: found.node || nodeKey, model: found.id, status: found.status });
     }
   }
-  const downloaded = [...done.keys()].filter((id) => !busy.has(id));
-  return { downloaded, downloading: [...busy] };
+  return out;
 }
 
-function classify(item: unknown): { id?: string; done: boolean } {
-  if (!item || typeof item !== "object") return { done: false };
+function classify(item: unknown): { id?: string; status?: DownloadStatus; node?: string } {
+  if (!item || typeof item !== "object") return {};
   const rec = item as Record<string, unknown>;
   for (const key of Object.keys(rec)) {
-    if (!/^Download(Completed|Ongoing|Pending|Failed)$/.test(key)) continue;
+    const status = downloadStatus(key);
+    if (!status) continue;
     const inner = rec[key];
     if (!inner || typeof inner !== "object") continue;
-    return { id: modelId(inner as Record<string, unknown>), done: key === "DownloadCompleted" };
+    const obj = inner as Record<string, unknown>;
+    return { id: modelId(obj), status, node: typeof obj.nodeId === "string" ? obj.nodeId : typeof obj.node_id === "string" ? obj.node_id : undefined };
   }
-  const status = String(rec.status ?? rec.type ?? rec.kind ?? "");
+  const statusText = String(rec.status ?? rec.type ?? rec.kind ?? "");
   const id = modelId(rec);
-  if (/fail|ongoing|pending|download|in_progress|incomplete/i.test(status)) return { id, done: false };
-  if (/complete/i.test(status)) return { id, done: true };
-  return { id, done: false };
+  if (/fail/i.test(statusText)) return { id, status: "failed" };
+  if (/ongoing|in_progress/i.test(statusText)) return { id, status: "ongoing" };
+  if (/pending/i.test(statusText)) return { id, status: "pending" };
+  if (/complete/i.test(statusText)) return { id, status: "complete" };
+  return { id };
+}
+
+function downloadStatus(key: string): DownloadStatus | undefined {
+  if (key === "DownloadCompleted") return "complete";
+  if (key === "DownloadPending") return "pending";
+  if (key === "DownloadOngoing") return "ongoing";
+  if (key === "DownloadFailed") return "failed";
+  return undefined;
 }
 
 function modelId(obj: Record<string, unknown>): string | undefined {

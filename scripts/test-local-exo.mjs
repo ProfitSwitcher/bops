@@ -63,7 +63,13 @@ async function readBody(req) {
   for await (const c of req) chunks.push(c);
   return JSON.parse(Buffer.concat(chunks).toString() || "{}");
 }
-const done = (id) => ({ DownloadCompleted: { nodeId: "studio1", shardMetadata: shard(id), total: { inBytes: 10 } } });
+const done = (id, node = "studio1") => ({ DownloadCompleted: { nodeId: node, shardMetadata: shard(id), total: { inBytes: 10 } } });
+const pending = (id, node) => ({ DownloadPending: { nodeId: node, shardMetadata: shard(id) } });
+const KIMI = "mlx-community/Kimi-K2.7-Code-4bit";
+function preview(model, sharding, instanceMeta, nodes) {
+  const nodeToRunner = Object.fromEntries(nodes.map((node, i) => [node, `runner-${i}`]));
+  return { modelId: model, sharding, instanceMeta, instance: { shardAssignments: { modelId: model, nodeToRunner, runnerToShard: nodeToRunner } }, error: null };
+}
 const busy = (id) => ({ DownloadOngoing: { nodeId: "studio3", shardMetadata: { TensorShardMetadata: { modelCard: { modelId: id } } }, downloadProgress: { downloaded: { inBytes: 1 }, total: { inBytes: 10 } } } });
 
 await check("only DownloadCompleted models count, and a download still in progress does not", async () => {
@@ -80,6 +86,11 @@ await check("only DownloadCompleted models count, and a download still in progre
     downloads: { studio1: [done("mlx-community/Kimi-K2.7-Code-4bit")], studio3: [] },
   });
   assert.deepEqual(oneNode.downloaded, ["mlx-community/Kimi-K2.7-Code-4bit"]);
+  const leftover = modelsFromExoState({
+    downloads: { studio1: [done(KIMI, "studio1")], studio3: [pending(KIMI, "studio3")] },
+  });
+  assert.deepEqual(leftover.downloaded, [KIMI]);
+  assert.deepEqual(leftover.downloading, []);
 });
 
 await check("heavy uses a downloaded exo model and never asks for one that is still downloading", async () => {
@@ -186,15 +197,19 @@ await check("a missing exo instance is placed across both nodes, then polled unt
   const placed = [];
   let polls = 0;
   const exo = await listen(async (req, res) => {
-    if (req.url === "/state") {
+    const path = req.url.split("?")[0];
+    if (path === "/state") {
       polls += 1;
       const runners = polls < 3 ? { r1: { RunnerLoading: {} } } : { r1: { RunnerReady: {} } };
       const instances = placed.length
-        ? { inst1: { MlxJacclInstance: { instanceId: "inst1", shardAssignments: { modelId: "mlx-community/Kimi-K2.7-Code-4bit", runnerToShard: { r1: {} }, nodeToRunner: { studio1: "r1", studio3: "r1" } } } } }
+        ? { inst1: { MlxJacclInstance: { instanceId: "inst1", shardAssignments: { modelId: KIMI, runnerToShard: { r1: {} }, nodeToRunner: { studio1: "r1", studio3: "r1" } } } } }
         : {};
-      return json(res, { downloads: { studio1: [done("mlx-community/Kimi-K2.7-Code-4bit")] }, instances, runners });
+      return json(res, { downloads: { studio1: [done(KIMI, "studio1")], studio3: [done(KIMI, "studio3")] }, instances, runners });
     }
-    if (req.method === "POST" && req.url === "/place_instance") {
+    if (path === "/instance/previews") {
+      return json(res, { previews: [preview(KIMI, "Tensor", "MlxJaccl", ["studio1", "studio3"]), preview(KIMI, "Pipeline", "MlxRing", ["studio1"])] });
+    }
+    if (req.method === "POST" && path === "/place_instance") {
       placed.push(await readBody(req));
       return json(res, { message: "Command received." });
     }
@@ -204,19 +219,96 @@ await check("a missing exo instance is placed across both nodes, then polled unt
   useConfig({
     llm: {
       endpoints: [{ id: "exo", baseUrl: `${exo.url}/v1`, provider: "exo", apiKey: "" }],
-      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [{ endpoint: "exo", model: "mlx-community/Kimi-K2.7-Code-4bit" }] } },
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [{ endpoint: "exo", model: KIMI }] } },
     },
     workers: [],
   });
   const result = await chat({ role: "heavy", messages: [{ role: "user", content: "write it" }] });
   assert.equal(result.content, "placed");
   assert.equal(placed.length, 1);
-  assert.deepEqual(placed[0], { model_id: "mlx-community/Kimi-K2.7-Code-4bit", sharding: "Tensor", instance_meta: "MlxJaccl", min_nodes: 2 });
+  assert.deepEqual(placed[0], { model_id: KIMI, sharding: "Tensor", instance_meta: "MlxJaccl", min_nodes: 2 });
   clearHealth();
   const again = await chat({ role: "heavy", messages: [{ role: "user", content: "again" }] });
   assert.equal(again.content, "placed");
   assert.equal(placed.length, 1);
   exo.server.close();
+});
+
+await check("a model complete on one node is not placed onto a node that only has DownloadPending", async () => {
+  clearHealth();
+  resetExoForTests();
+  process.env.BOPS_EXO_LOAD_TIMEOUT_MS = "3000";
+  const placed = [];
+  let ready = false;
+  const exo = await listen(async (req, res) => {
+    const path = req.url.split("?")[0];
+    if (path === "/state") {
+      return json(res, {
+        downloads: { studio1: [done(KIMI, "studio1")], studio3: [pending(KIMI, "studio3")] },
+        instances: ready ? { inst1: { MlxRingInstance: { instanceId: "inst1", shardAssignments: { modelId: KIMI, runnerToShard: { r1: {} }, nodeToRunner: { studio1: "r1" } } } } } : {},
+        runners: { r1: { RunnerReady: {} } },
+      });
+    }
+    if (path === "/instance/previews") {
+      return json(res, { previews: [preview(KIMI, "Tensor", "MlxJaccl", ["studio1", "studio3"]), preview(KIMI, "Pipeline", "MlxRing", ["studio1"])] });
+    }
+    if (req.method === "POST" && path === "/place_instance") {
+      const body = await readBody(req);
+      placed.push(body);
+      ready = true;
+      return json(res, { message: "Command received." });
+    }
+    if (path === "/v1/chat/completions") return json(res, { choices: [{ message: { content: "studio1 only" } }] });
+    json(res, { error: "unexpected" }, 500);
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "exo", baseUrl: `${exo.url}/v1`, provider: "exo", apiKey: "" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [{ endpoint: "exo", model: KIMI }] } },
+    },
+    workers: [],
+  });
+  const result = await chat({ role: "heavy", messages: [{ role: "user", content: "write it" }] });
+  assert.equal(result.content, "studio1 only");
+  assert.equal(placed.length, 1);
+  assert.deepEqual(placed[0], { model_id: KIMI, sharding: "Pipeline", instance_meta: "MlxRing", min_nodes: 1 });
+  exo.server.close();
+});
+
+await check("no placement is sent when every preview would download the model", async () => {
+  clearHealth();
+  const calls = [];
+  const exo = await listen(async (req, res) => {
+    const path = req.url.split("?")[0];
+    calls.push(`${req.method} ${path}`);
+    if (path === "/state") return json(res, { downloads: { studio1: [done(KIMI, "studio1")], studio3: [pending(KIMI, "studio3")] }, instances: {}, runners: {} });
+    if (path === "/instance/previews") return json(res, { previews: [preview(KIMI, "Tensor", "MlxJaccl", ["studio1", "studio3"])] });
+    if (req.method === "POST" && path === "/place_instance") return json(res, { error: "should not place" }, 500);
+    json(res, { error: "unexpected" }, 500);
+  });
+  const ollama = await listen((req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "ornith-1.5:122b" }] });
+    json(res, { choices: [{ message: { content: "planner fallback" } }] });
+  });
+  useConfig({
+    llm: {
+      endpoints: [
+        { id: "exo", baseUrl: `${exo.url}/v1`, provider: "exo", apiKey: "" },
+        { id: "studio3", baseUrl: `${ollama.url}/v1`, provider: "ollama", apiKey: "" },
+      ],
+      roles: {
+        planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] },
+        heavy: { chain: [{ endpoint: "exo", model: KIMI }, { endpoint: "studio3", model: "ornith-1.5:122b" }] },
+      },
+    },
+    workers: [],
+  });
+  const result = await chat({ role: "heavy", messages: [{ role: "user", content: "plan" }] });
+  assert.equal(result.content, "planner fallback");
+  assert.match(result.degraded ?? "", /Not placing it/);
+  assert.equal(calls.some((c) => c.startsWith("POST /place_instance")), false);
+  exo.server.close();
+  ollama.server.close();
 });
 
 await check("a running exo instance that will not fit is left alone, and heavy falls through", async () => {

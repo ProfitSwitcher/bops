@@ -29,10 +29,33 @@ export type ResponseBody = {
   reasoning?: { effort?: string };
 };
 
+/** True only when the newest user message itself carries an image. An earlier picture does not. */
+export function latestUserHasImage(input: unknown): boolean {
+  if (!Array.isArray(input)) return false;
+  for (let i = input.length - 1; i >= 0; i--) {
+    const item = input[i];
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    if (rec.type === "computer_call_output") return true;
+    if (rec.type === "function_call" || rec.type === "computer_call" || rec.type === "reasoning" || rec.type === "compaction_trigger" || rec.type === "function_call_output") continue;
+    if (rec.role === "assistant" || rec.role === "system" || rec.role === "developer") continue;
+    return messageHasImage(rec.content ?? rec);
+  }
+  return false;
+}
+
+function messageHasImage(content: unknown): boolean {
+  if (!Array.isArray(content)) return false;
+  return content.some((part) => {
+    if (!part || typeof part !== "object") return false;
+    const type = (part as { type?: string }).type;
+    return type === "input_image" || type === "image_url" || type === "computer_screenshot";
+  });
+}
+
 export function roleFor(body: ResponseBody): Role {
   const tools = body.tools ?? [];
-  const blob = JSON.stringify(body.input ?? "");
-  if (tools.some((t) => t.type === "computer") || /input_image|image_url|computer_screenshot/.test(blob)) return "vision";
+  if (tools.some((t) => t.type === "computer") || latestUserHasImage(body.input)) return "vision";
   const effort = body.reasoning?.effort;
   if (effort === "high" || effort === "xhigh" || effort === "max") return "heavy";
   if (body.model && roleChain("heavy").some((s) => s.model.toLowerCase() === body.model!.toLowerCase())) return "heavy";
@@ -41,18 +64,30 @@ export function roleFor(body: ResponseBody): Role {
   return "planner";
 }
 
-/** The latest image stays on the last message, so a follow-up picture is what the vision model answers. */
+function hasImage(message: ChatMessage): boolean {
+  return Array.isArray(message.content) && message.content.some((p) => p.type === "image_url");
+}
+
+/**
+ * An image is sent only with the newest user message. A later text question drops earlier
+ * pictures so they are not what the model answers. When that newest message does carry one,
+ * it stays last, after status notes.
+ */
 export function focusLatestImage(messages: ChatMessage[]): ChatMessage[] {
-  let last = -1;
-  for (let i = 0; i < messages.length; i++) {
-    const content = messages[i].content;
-    if (Array.isArray(content) && content.some((p) => p.type === "image_url")) last = i;
+  let lastUser = -1;
+  for (let i = 0; i < messages.length; i++) if (messages[i].role === "user") lastUser = i;
+  if (lastUser < 0 || !hasImage(messages[lastUser])) {
+    return messages.map((message) => {
+      if (!hasImage(message) || !Array.isArray(message.content)) return message;
+      const text = message.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
+      return { ...message, content: text };
+    });
   }
-  if (last < 0 || last === messages.length - 1) return messages;
-  const image = messages[last];
+  if (lastUser === messages.length - 1) return messages;
+  const image = messages[lastUser];
   return [
-    ...messages.slice(0, last),
-    ...messages.slice(last + 1),
+    ...messages.slice(0, lastUser),
+    ...messages.slice(lastUser + 1),
     { role: "system", content: "The next message is the latest one. Answer it, and look at its image. Earlier messages are context only." },
     image,
   ];
@@ -139,7 +174,7 @@ function inputMessages(input: unknown): ChatMessage[] {
       continue;
     }
     if (rec.type === "function_call" || rec.type === "computer_call" || rec.type === "reasoning" || rec.type === "compaction_trigger") continue;
-    const role = rec.role === "assistant" || rec.role === "system" ? rec.role : "user";
+    const role = rec.role === "assistant" ? "assistant" : rec.role === "system" || rec.role === "developer" ? "system" : "user";
     out.push({ role, content: contentOf(rec.content ?? rec) });
   }
   return out;

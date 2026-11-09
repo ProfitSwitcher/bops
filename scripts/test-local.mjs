@@ -364,6 +364,45 @@ await check("a follow-up image is the message the vision model answers", async (
   vision.server.close();
 });
 
+await check("a later text question does not stay on the vision model or the earlier image", async () => {
+  clearHealth();
+  resetResponsesForTests();
+  let sent;
+  const models = await listen(async (req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "ornith-1.5:122b" }, { name: "qwen3.8:27b-q8_0" }] });
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    sent = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    json(res, { choices: [{ message: { content: sent.model === "ornith-1.5:122b" ? "green, yellow, or bare copper" : "from the picture" } }] });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "studio3", baseUrl: `${models.url}/v1`, provider: "ollama" }],
+      roles: {
+        planner: { chain: [{ endpoint: "studio3", model: "ornith-1.5:122b" }] },
+        fast: { chain: [] },
+        vision: { chain: [{ endpoint: "studio3", model: "qwen3.8:27b-q8_0" }] },
+        embed: { chain: [] },
+        heavy: { chain: [] },
+      },
+    },
+    workers: [],
+  });
+  const input = [
+    { role: "user", content: [{ type: "input_text", text: "what color is this" }, { type: "input_image", image_url: "data:image/png;base64,OLDIMAGE" }] },
+    { role: "assistant", content: "blue" },
+    { role: "user", content: "what color is a ground wire" },
+  ];
+  const { roleFor, latestUserHasImage } = await import("../lib/local/responses.ts");
+  assert.equal(latestUserHasImage(input), false);
+  assert.equal(roleFor({ input }), "planner");
+  const out = await runResponses({ input });
+  assert.equal(out.model, "ornith-1.5:122b");
+  assert.equal(JSON.stringify(sent.messages).includes("OLDIMAGE"), false);
+  assert.match(JSON.stringify(sent.messages.at(-1)), /ground wire/);
+  models.server.close();
+});
+
 await check("mac keys are key codes, and move and scroll post core graphics events", async () => {
   assert.match(macKeyScript("Return"), /key code 36$/);
   assert.doesNotMatch(macKeyScript("Return"), /keystroke|Return/);
