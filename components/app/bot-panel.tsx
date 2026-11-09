@@ -415,6 +415,7 @@ export function contactOf(state: AppState, b: Bot, plan: PhonePlan) {
 
 /** Text or message it, call its number, book a video call, email it: the panel's four round buttons (`size` 44 on the page). */
 export function ContactActions({ state, bot: b, plan, onOpenChat, size }: { state: AppState; bot: Bot; plan: PhonePlan; onOpenChat: (chatId: string) => void; size?: number }) {
+  const local = useLocalOnly();
   const { reach, emailRoom, emailOnAsk } = contactOf(state, b, plan);
   return (
       <div className={`flex ${size ? "gap-2.5" : "gap-3"}`} data-contact-actions>
@@ -430,10 +431,12 @@ export function ContactActions({ state, bot: b, plan, onOpenChat, size }: { stat
           <path d="M3 2.2h2.6l1 2.6-1.6 1a7 7 0 003 3l1-1.6 2.6 1V11a.9.9 0 01-.9.9A9.6 9.6 0 012.1 3.1.9.9 0 013 2.2z" fill="#0A0A0A" />
         </ActionButton>
         {/* Video calls with bots aren't here yet; meanwhile it books a video call with the Bops team. */}
+        {!local && (
         <ActionButton size={size} label="Book a 20 minute video call with the Bops team" onClick={() => window.open(BOOK_A_CALL)}>
           <rect x="1.2" y="3.5" width="8" height="7" rx="1.5" fill="#0A0A0A" />
           <path d="M9.6 6.2l3.2-2v5.6L9.6 7.8z" fill="#0A0A0A" />
         </ActionButton>
+        )}
         <ActionButton size={size} label={b.email ? `Email ${b.email}` : emailRoom ? emailRoom.text : emailOnAsk ? `${b.name} has no email yet` : plan.planNeeded ? "An email comes with Pro and Max" : "Its inbox is coming"} disabled={!b.email} onClick={() => b.email && window.open(`mailto:${b.email}`)}>
           <rect x="1.5" y="3" width="11" height="8.5" rx="1.5" fill="none" stroke="#0A0A0A" strokeWidth="1.3" />
           <path d="M2 4l5 4 5-4" fill="none" stroke="#0A0A0A" strokeWidth="1.3" strokeLinejoin="round" />

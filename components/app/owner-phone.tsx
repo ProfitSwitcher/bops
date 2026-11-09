@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { PRIVACY, TERMS } from "@/lib/links";
+import { useLocalOnly } from "./local-mode";
 import { CodeInput, ErrorLine, postJson, ResendButton, RetryLabel, useInfo, type CodeAnswer } from "./code-entry";
 
 /** One of the user's numbers, as /api/phone lists it. */
@@ -185,6 +186,7 @@ export function OwnerPhone({
 }) {
   // Removing the last number that counts as you asks first.
   const [confirming, setConfirming] = useState<string | null>(null);
+  const local = useLocalOnly();
   const { number, agree, busy, waiting } = phone;
   const formRetry = phone.retryFor("form");
   const owners = info.owners ?? [];
@@ -231,7 +233,7 @@ export function OwnerPhone({
             if (e.key === "Enter") sendNew();
           }}
           disabled={busy}
-          autoFocus={mode === "setup" || phone.adding}
+          autoFocus={mode === "setup"}
           placeholder="+1 (555) 123-4567"
           aria-label="Your mobile number"
           inputMode="tel"
@@ -259,9 +261,14 @@ export function OwnerPhone({
       <label className="flex max-w-[560px] items-start gap-2 text-[12px] leading-[17px] text-[#6B6B6B]">
         <input type="checkbox" checked={agree} disabled={busy} onChange={(e) => phone.setAgree(e.target.checked)} className="mt-[2px] accent-[#0A0A0A]" />
         <span>
-          Yes, text me from my Bops bots (Bops by Orgo): replies to my texts, finished tasks and heads-ups. How often depends on what I ask for. Message and data rates may apply. Reply STOP to opt out, HELP for help. Texts and calls from this number count as me.{" "}
-          <a href={PRIVACY} target="_blank" rel="noreferrer" className="underline">Privacy</a> ·{" "}
-          <a href={TERMS} target="_blank" rel="noreferrer" className="underline">Terms</a>
+          Yes, text me from my Bops bots: replies to my texts, finished tasks and heads-ups. How often depends on what I ask for. Message and data rates may apply. Reply STOP to opt out, HELP for help. Texts and calls from this number count as me.
+          {!local && (
+            <>
+              {" "}
+              <a href={PRIVACY} target="_blank" rel="noreferrer" className="underline">Privacy</a> ·{" "}
+              <a href={TERMS} target="_blank" rel="noreferrer" className="underline">Terms</a>
+            </>
+          )}
         </span>
       </label>
     </>

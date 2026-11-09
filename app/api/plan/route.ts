@@ -1,3 +1,4 @@
+import { localOnly } from "@/lib/local/mode";
 import { cloudOn } from "@/lib/server/cloud";
 import { loadOrgoKey } from "@/lib/server/orgo-auth";
 import { orgoPages, orgoPlan, readBopsPlan } from "@/lib/server/plan";
@@ -13,6 +14,7 @@ export const dynamic = "force-dynamic";
  * "out of AI credit" card (the user may have just paid).
  */
 export async function GET(request: Request) {
+  if (localOnly()) return Response.json({ plan: null, links: {}, local: true });
   const fresh = new URL(request.url).searchParams.get("fresh") === "1";
   const key = fresh || getState().credits?.out ? await loadOrgoKey() : null;
   const [plan, bops] = await Promise.all([orgoPlan({ fresh }), key && cloudOn() ? readBopsPlan(key) : undefined]);

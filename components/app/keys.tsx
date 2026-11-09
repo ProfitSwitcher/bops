@@ -337,7 +337,10 @@ export function KeysSettings({
   const ref = useRef<HTMLDivElement>(null);
   const loaded = !!info;
   useEffect(() => {
-    if (keysFor && loaded) ref.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    if (keysFor && loaded) {
+      const scroller = ref.current?.closest<HTMLElement>("[data-settings-pane], [data-vault]");
+      if (scroller) scroller.scrollTop = 0;
+    }
   }, [keysFor, loaded]);
   // The Vault already open when a bot's profile asks to add a key for it: open the form for that bot.
   const [askedFor, setAskedFor] = useState(keysFor);

@@ -1,3 +1,4 @@
+import { localOnly } from "@/lib/local/mode";
 import { loadOrgoKey } from "@/lib/server/orgo-auth";
 import { bopsBillingLink } from "@/lib/server/plan";
 import { trackServerEvent } from "@/lib/server/analytics";
@@ -10,6 +11,7 @@ export const dynamic = "force-dynamic";
  * billing portal, Bops plans only), for the app to open in the browser. Answers {url}, or {error}.
  */
 export async function POST() {
+  if (localOnly()) return Response.json({ error: "Local mode has no plan or billing." }, { status: 404 });
   const unready = notReady();
   if (unready) return unready;
   const key = await loadOrgoKey();

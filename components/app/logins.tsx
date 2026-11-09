@@ -203,7 +203,7 @@ export function LoginsPage({
 
   return (
     <div data-logins className="flex min-h-0 min-w-0 flex-1">
-      <div className="motion-fade-in relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 pb-8 pt-5">
+      <div data-settings-scroll className="motion-fade-in relative flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 pb-8 pt-5">
         <div className="flex w-full flex-col gap-3.5">
           <div className="flex items-start gap-4">
             <div className="flex min-w-0 flex-1 flex-col">

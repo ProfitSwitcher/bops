@@ -199,7 +199,6 @@ export function WorkspaceDomains({
             onBought={bought}
             onUnsure={() => setReads((x) => x + 1)}
             onBusy={setBuying}
-            autoFocus
           />
         </div>
       )}

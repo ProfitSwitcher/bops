@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { runnerNeedsKey, workBot, type AppState, type Bot, type ComputerOrgoKey, type RunnerState } from "@/lib/types";
 import { Your, yourMac } from "@/lib/shared";
 import { Mascot } from "./mascot";
+import { useLocalOnly } from "./local-mode";
 import { since } from "./side-group";
 import { teamOf } from "./ui";
 
@@ -53,6 +54,7 @@ export const IDENTITY_LINE = "Orgo identity (this computer only)";
  * tests.
  */
 export function BotComputersList({ state, keys, padded }: { state: AppState; keys: ComputerKeys | null; padded: boolean }) {
+  const local = useLocalOnly();
   return (
     <div className={`flex flex-col px-[22px] pt-4 ${padded ? "pb-5" : ""}`}>
       <span className="pb-1 text-[13px] font-semibold">{`${Your(state)} bots' computers`}</span>
@@ -80,7 +82,7 @@ export function BotComputersList({ state, keys, padded }: { state: AppState; key
                   <span className="min-w-0 truncate" data-tip={key?.name || undefined}>
                     {line}
                   </span>
-                  {key && keys?.manage && (
+                  {key && keys?.manage && !local && (
                     <a href={keys.manage} target="_blank" rel="noreferrer" className="shrink-0 underline underline-offset-2 hover:text-ink">
                       Manage in Orgo
                     </a>

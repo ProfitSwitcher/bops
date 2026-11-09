@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { PRIVACY, TERMS } from "@/lib/links";
+import { useLocalOnly } from "./local-mode";
 import { Mascot, Spinner } from "./mascot";
 import { useTelemetryHere } from "./usage-data";
 
@@ -137,6 +138,7 @@ const link = "font-medium text-ink underline underline-offset-2 hover:text-[#3A3
 
 export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
   const [step, setStep] = useState<Step>({ kind: "idle" });
+  const local = useLocalOnly();
   // The way picked last: what "Try again" and "Get a new code" go back to, and what the waiting screen says.
   const [way, setWay] = useState<Way>("google");
   const telemetryHere = useTelemetryHere();
@@ -151,7 +153,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
         body: JSON.stringify(w === "orgo" ? {} : { provider: w }),
       });
       const body = (await res.json().catch(() => ({}))) as Code & { error?: string };
-      if (!res.ok) return setStep({ kind: "problem", problem: problemOf(body.error) });
+      if (!res.ok || local) return setStep({ kind: "problem", problem: problemOf(body.error) });
       setStep({ kind: "waiting", code: body, total: Math.max(1, body.expiresAt - Date.now()) });
       // The button said where it goes (Google, email or Orgo), so go on there: the page already has the code.
       openInBrowser(body.verificationUrl);
@@ -232,6 +234,8 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             <Waiting step={step} way={way} onReopen={() => openInBrowser(step.code.verificationUrl)} onCancel={cancel} />
           ) : step.kind === "approved" ? (
             <Approved who={step.who} />
+          ) : local ? (
+            <Heading title="Bops is on this Mac" line="There is no Orgo, Google, or email sign-in." />
           ) : step.kind === "idle" || step.kind === "starting" ? (
             <Welcome starting={step.kind === "starting" ? way : null} onStart={(w) => void start(w)} />
           ) : step.kind === "saving" ? (
@@ -245,6 +249,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
             />
           )}
         </div>
+        {!local && (
         <span className="pt-5 text-[12px] leading-4 text-pencil">
           By continuing you agree to Orgo&apos;s{" "}
           <a href={TERMS} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-ink">
@@ -256,6 +261,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: () => void }) {
           </a>
           .
         </span>
+        )}
         {telemetryHere && <span className="pt-1.5 text-[12px] leading-4 text-pencil">Bops shares usage counts and error reports with Orgo, never your content. You can turn this off in Settings.</span>}
       </div>
     </div>

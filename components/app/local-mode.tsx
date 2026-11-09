@@ -5,7 +5,14 @@ import { useEffect, useState } from "react";
 type Feature = { id: string; name: string; available: boolean; reason: string };
 type Ready = { endpoint: string; model: string; quant?: string };
 type RoleInfo = { chain: { endpoint: string; model: string; quant?: string }[]; ready: Ready[]; skipped: string[] };
-type Info = { localOnly: boolean; features: Feature[]; roles: Record<string, RoleInfo>; exo?: { warming: { endpoint: string; model: string; forMs: number } | null } };
+type Info = {
+  localOnly: boolean;
+  features: Feature[];
+  roles: Record<string, RoleInfo>;
+  endpoints?: { id: string; baseUrl: string; provider: string }[];
+  workers?: { id: string; url: string; kind?: string }[];
+  exo?: { warming: { endpoint: string; model: string; forMs: number } | null };
+};
 
 const LABELS: Record<string, string> = { planner: "Planner", fast: "Fast", vision: "Vision", embed: "Embeddings", heavy: "Heavy" };
 
@@ -73,15 +80,18 @@ const ROLE_NAMES = ["heavy", "planner", "fast", "vision", "embed"] as const;
 
 type RoleDraft = { mode: string; provider: string; model: string };
 
-/** Whether this server is local-only. Cached so settings and tabs don't each wait. */
+/**
+ * Whether this server is local-only. Starts on, so a slow config read cannot flash an Orgo
+ * account page, and flips off only when the server says local-only is off.
+ */
 export function useLocalOnly() {
-  const [on, setOn] = useState(false);
+  const [on, setOn] = useState(true);
   useEffect(() => {
     let stop = false;
-    void fetch("/api/local")
+    void fetch("/api/config")
       .then((r) => r.json())
       .then((body: { localOnly?: boolean }) => {
-        if (!stop) setOn(!!body.localOnly);
+        if (!stop) setOn(body.localOnly !== false);
       })
       .catch(() => {});
     return () => {
@@ -89,6 +99,58 @@ export function useLocalOnly() {
     };
   }, []);
   return on;
+}
+
+/** Settings, Plan: the machines and models in use. No subscription and no link off this Mac. */
+export function LocalMachines() {
+  const [info, setInfo] = useState<Info | null>(null);
+  useEffect(() => {
+    let stop = false;
+    void fetch("/api/local")
+      .then((r) => r.json())
+      .then((body: Info) => {
+        if (!stop) setInfo(body);
+      })
+      .catch(() => {});
+    return () => {
+      stop = true;
+    };
+  }, []);
+  const endpoints = info?.endpoints ?? [];
+  const workers = info?.workers ?? [];
+  return (
+    <div className="flex flex-col gap-4 px-[22px] pt-[18px]">
+      <div className="flex flex-col gap-2">
+        <span className="text-[13px] font-semibold">Machines</span>
+        <div className="flex flex-col rounded-[14px] px-3.5 shadow-[0_0_0_1px_#E6E6E3]">
+          {endpoints.map((e) => (
+            <span key={e.id} className="border-b border-[#F0F0EE] py-2 text-[13px] last:border-0">
+              <span className="font-medium">{e.id}</span> <span className="text-[#6B6B6B]">{e.provider} · {e.baseUrl}</span>
+            </span>
+          ))}
+          {workers.map((w) => (
+            <span key={w.id} className="border-b border-[#F0F0EE] py-2 text-[13px] last:border-0">
+              <span className="font-medium">{w.id}</span> <span className="text-[#6B6B6B]">worker · {w.kind ?? "native"} · {w.url}</span>
+            </span>
+          ))}
+          {!info && <span className="py-2 text-[13px] text-[#6B6B6B]">Reading this Mac&apos;s config…</span>}
+          {info && !endpoints.length && !workers.length && <span className="py-2 text-[13px] text-[#6B6B6B]">No machines in bops.local.json.</span>}
+        </div>
+      </div>
+      <div className="flex flex-col gap-2">
+        <span className="text-[13px] font-semibold">Models in use</span>
+        <div className="flex flex-col rounded-[14px] px-3.5 shadow-[0_0_0_1px_#E6E6E3]">
+          {Object.entries(info?.roles ?? {}).map(([role, spec]) => (
+            <span key={role} className="border-b border-[#F0F0EE] py-2 text-[13px] last:border-0">
+              <span className="text-[#9A9A98]">{LABELS[role] ?? role}: </span>
+              {spec.ready[0] ? `${spec.ready[0].model} on ${spec.ready[0].endpoint}` : "none of the configured models answered"}
+            </span>
+          ))}
+          {!info && <span className="py-2 text-[13px] text-[#6B6B6B]">Checking which models answered…</span>}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /** Optional keys. They stay on this machine and are sent only to that provider. */

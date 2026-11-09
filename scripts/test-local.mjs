@@ -1,7 +1,7 @@
 // Local-only provider, routing, memory, worker, and the egress tripwire.
 // Usage: node --experimental-strip-types scripts/test-local.mjs
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
@@ -873,6 +873,82 @@ await check("deleting a bot session removes its local memory", async () => {
   assert.equal(listFacts("bops").some((f) => f.sessionId === "bops-chat-bot-z"), false);
   rmSync(dir, { recursive: true, force: true });
   closeMemoryForTests();
+});
+
+await check("local settings do not open an external account or billing page", async () => {
+  const { isExternalAccountUrl, externalAccountUrlsIn, localAccountPayload } = await import("../lib/local/settings-links.ts");
+  const { readLocalProfile, writeLocalProfile } = await import("../lib/local/profile.ts");
+  const blocked = [
+    "https://www.orgo.ai/account?tab=plan",
+    "https://www.orgo.ai/account?tab=usage",
+    "https://www.orgo.ai/settings/billing",
+    "https://www.orgo.ai/settings/billing#credits",
+    "https://www.orgo.ai/settings/api-keys",
+    "https://www.orgo.ai/workspaces",
+    "https://www.orgo.ai/workspaces?project_id=p",
+    "https://www.orgo.ai/privacy",
+    "https://www.orgo.ai/terms",
+    "https://orgo.cal.com/nick/20-min-meeting",
+    "https://checkout.stripe.com/c/pay_x",
+    "https://billing.stripe.com/p/session",
+    "https://accounts.google.com/o/oauth2/v2/auth",
+  ];
+  for (const url of blocked) assert.equal(isExternalAccountUrl(url), true, url);
+  assert.equal(isExternalAccountUrl("sms:+15551212"), false);
+  assert.equal(isExternalAccountUrl("mailto:ada@example.com"), false);
+  assert.equal(isExternalAccountUrl("http://127.0.0.1:11434/v1"), false);
+  assert.deepEqual(externalAccountUrlsIn(localAccountPayload("Ada")), []);
+
+  for (const file of ["app/api/account/route.ts", "app/api/account/checkout/route.ts", "app/api/account/manage/route.ts", "app/api/account/credit/route.ts", "app/api/plan/route.ts", "app/api/runs-on/keys/route.ts"]) {
+    const text = readFileSync(file, "utf8");
+    const guard = text.indexOf("if (localOnly())");
+    assert.ok(guard > 0, `${file} does not stop in local mode`);
+    const built = text.search(/orgoPages\(|orgoKeysPage\(/);
+    if (built >= 0) assert.ok(guard < built, `${file} builds an Orgo page before the local check`);
+  }
+  assert.match(readFileSync("lib/server/members.ts", "utf8"), /if \(localOnly\(\)\) return ok\(\{ state: "self_hosted" \}\)/);
+
+  const settings = readFileSync("components/app/bops-app.tsx", "utf8");
+  const settingsFn = settings.slice(settings.indexOf("export function Settings"), settings.indexOf("function FirstLoad"));
+  assert.match(settingsFn, /scrollTop = 0/);
+  assert.match(settingsFn, /overflowAnchor: "none"/);
+  assert.match(settingsFn, /Local: no plan or billing/);
+  assert.match(settingsFn, /<LocalMachines \/>/);
+  assert.doesNotMatch(settingsFn, /window\.open\(/);
+
+  const guarded = [
+    ["components/app/account.tsx", "if (local) return null"],
+    ["components/app/plan-note.tsx", "if (local || !info.links?.plan)"],
+    ["components/app/members.tsx", "!local && read.orgoUrl"],
+    ["components/app/bot-computers.tsx", "!local &&"],
+    ["components/app/computer-size.tsx", "if (local) return null"],
+    ["components/app/computer.tsx", "if (local) return null"],
+    ["components/app/owner-phone.tsx", "!local &&"],
+    ["components/app/bot-panel.tsx", "!local &&"],
+    ["components/app/sign-in.tsx", "There is no Orgo, Google, or email sign-in"],
+    ["components/app/app-settings.tsx", "error.topUp && !local"],
+    ["components/app/sidebar.tsx", "user && !local"],
+    ["components/app/notice-popup.tsx", "isExternalAccountUrl"],
+  ];
+  for (const [file, needle] of guarded) assert.match(readFileSync(file, "utf8"), new RegExp(needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), file);
+
+  const dir = mkdtempSync(join(tmpdir(), "bops-profile-"));
+  const cfg = join(dir, "bops.local.json");
+  writeFileSync(cfg, `${JSON.stringify({ llm: { endpoints: [], roles: {} }, workers: [], token: "stay" })}\n`);
+  const prev = process.env.BOPS_LOCAL_CONFIG;
+  process.env.BOPS_LOCAL_CONFIG = cfg;
+  try {
+    writeLocalProfile({ name: "Ada", about: "Runs the shop" });
+    assert.deepEqual(readLocalProfile(), { name: "Ada", about: "Runs the shop" });
+    const saved = JSON.parse(readFileSync(cfg, "utf8"));
+    assert.equal(saved.profile.name, "Ada");
+    assert.equal(saved.token, "stay");
+    assert.deepEqual(externalAccountUrlsIn(saved), []);
+  } finally {
+    if (prev === undefined) delete process.env.BOPS_LOCAL_CONFIG;
+    else process.env.BOPS_LOCAL_CONFIG = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 await check("egress tripwire refuses public hosts and still allows loopback", async () => {

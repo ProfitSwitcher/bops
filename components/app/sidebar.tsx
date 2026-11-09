@@ -30,6 +30,7 @@ import { APPS_NAME, appsLine, appsShown } from "@/lib/apps-access";
 import { botGroups, groupedList, siteLabel } from "@/lib/bot-groups";
 import { codersOf } from "@/lib/bot-mood";
 import { BotGroupBlock, CodeMark, renameComputer, useGroupFolds, useSiteDomains } from "./bot-groups";
+import { useLocalOnly } from "./local-mode";
 
 /** A chat's newest message, if it has one. */
 export const lastMessageOf = (state: AppState, c: Chat) => [...state.messages].reverse().find((m) => m.chatId === c.id);
@@ -562,6 +563,7 @@ export function YouMenuView({
   const team = given === undefined ? read : given;
   const canRestart = useCanRestart();
   const leaving = useSignOut();
+  const local = useLocalOnly();
   const box = useRef<HTMLDivElement>(null);
   const shut = () => {
     setOpen(false);
@@ -590,7 +592,7 @@ export function YouMenuView({
     fn();
   };
   const item = "flex h-9 items-center gap-2.5 rounded-[10px] px-2.5 text-left text-[14px] font-medium hover:bg-black/[0.04]";
-  const name = user?.name?.trim() || user?.email || state.owner?.name?.trim() || "You";
+  const name = (local ? state.owner?.name?.trim() : "") || user?.name?.trim() || user?.email || state.owner?.name?.trim() || "You";
   const others = teamWords(team);
   return (
     <div ref={box} data-footer-slot="You" data-footer-key="you" className={`motion-footer-slot relative flex h-9 min-w-9 basis-9 ${expanded ? "grow" : "grow-0"} shrink`}>
@@ -628,7 +630,7 @@ export function YouMenuView({
         <div role="menu" aria-label="Your account" className="motion-menu-in absolute bottom-[calc(100%+8px)] left-0 z-[60] flex w-[248px] origin-bottom-left flex-col rounded-[14px] bg-white p-1.5 shadow-[0_0_0_1px_#E6E6E3,0_12px_32px_rgba(0,0,0,0.12)]">
           <div className="flex flex-col gap-0.5 px-2.5 pb-2 pt-1.5">
             <span className="truncate text-[14px] font-semibold leading-[18px]">{user?.name || state.owner?.name || "You"}</span>
-            <span className="truncate text-[12px] leading-4 text-[#9A9A98]">{user ? (user.email ?? "Signed in with Orgo") : "Not signed in"}</span>
+            <span className="truncate text-[12px] leading-4 text-[#9A9A98]">{local ? "On this Mac" : user ? (user.email ?? "Signed in with Orgo") : "Not signed in"}</span>
           </div>
           <div className="mx-2 mb-1 h-px bg-[#ECECEA]" />
           {onTeam && (
@@ -675,7 +677,7 @@ export function YouMenuView({
                 Restart Bops
               </button>
             ))}
-          {user && (
+          {user && !local && (
             <>
               <div className="mx-2 my-1 h-px bg-[#ECECEA]" />
               {/* Asked in place when changes haven't reached Bops Cloud; else the app goes to the sign in screen. */}

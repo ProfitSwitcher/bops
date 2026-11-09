@@ -1305,6 +1305,8 @@ function NoComputer({ state, bot: b, host }: { state: AppState; bot: Bot; /** Th
 
 /** The workspace on orgo.ai, where its computers are too: opened in the browser. */
 function OrgoLink({ href, label }: { href: string; label: string }) {
+  const local = useLocalOnly();
+  if (local) return null;
   return (
     <a href={href} target="_blank" rel="noreferrer" className="rounded-full px-2.5 py-1 text-[13px] font-medium leading-4 text-ink shadow-[0_0_0_1px_#E6E6E3] hover:bg-black/[0.04]">
       {label}

@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { isCloudModel } from "./models";
+import { readLocalProfile } from "./profile";
 
 export type ProviderKind = "ollama" | "openai-compatible" | "llamacpp" | "lmstudio" | "mlx" | "vllm" | "exo";
 export type Role = "planner" | "fast" | "vision" | "embed" | "heavy";
@@ -125,7 +126,7 @@ export function exoAllowEvict(): boolean {
 
 /** The app's owner while local-only is on. No Orgo or Google account. */
 export function localOwnerStatus() {
-  return { signedIn: true, user: { id: "local", name: "Local" }, needsSignIn: false, cloudProblem: false };
+  return { signedIn: true, user: { id: "local", name: readLocalProfile()?.name || "Local" }, needsSignIn: false, cloudProblem: false };
 }
 
 function emptyConfig(): LocalConfig {

@@ -3,7 +3,7 @@
 import { APPS_NAME, appsOwnShown, appsShown } from "@/lib/apps-access";
 import { screenMap } from "@/lib/screens";
 import { chatAsks } from "@/lib/asks";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { accountIn, botChatId, BRAINS_ON, isScreenWatch, live, sharesComputer, siteBotOf, siteLoginIn, workBot, workspaceOf, type AppState, type Host, type Session, type Watch } from "@/lib/types";
 import { appCoders, copyBotOf } from "@/lib/hosted-apps";
 import { initialsOf, PlanAndCredit, UsageSection } from "./account";
@@ -33,7 +33,7 @@ import { OpenBotComputer } from "./app-envs";
 import { WorkspaceDomains } from "./workspace-domains";
 import { ChatSwitch } from "./chat-switch";
 import { BotSettingsPage } from "./bot-settings";
-import { CloudAnswerBadge, LocalModeNotice, useLocalOnly } from "./local-mode";
+import { CloudAnswerBadge, LocalMachines, LocalModeNotice, useLocalOnly } from "./local-mode";
 import type { SettingsSection } from "@/lib/bot-settings";
 
 /** Your Mac's tab, and the chat's bot's profile (it follows the chat, like the computer tab); both open on demand. */
@@ -1770,6 +1770,7 @@ function PhoneService() {
 
 /** Who the bots work for: the name they call you by, and what they should know about you (in every bot's instructions). */
 function OwnerSettings({ owner }: { owner: AppState["owner"] }) {
+  const local = useLocalOnly();
   const [name, setName] = useState(owner?.name ?? "");
   const [about, setAbout] = useState(owner?.about ?? "");
   const [saved, setSaved] = useState(false);
@@ -1809,6 +1810,7 @@ function OwnerSettings({ owner }: { owner: AppState["owner"] }) {
           {saved && <span className="text-[12px] text-[#6B6B6B]">Saved</span>}
         </div>
       </div>
+      {local && <span className="text-[12px] leading-4 text-[#9A9A98]">Saved on this Mac, in your local profile. There is no Orgo account and no sign-in.</span>}
     </div>
   );
 }
@@ -2089,6 +2091,7 @@ export function Settings({
   const fits = (p?: SettingsPane) => !!p && (p !== "domains" || domains) && (p !== "apps" || apps) && (!state.shared || ((p !== "team" || adminHere) && (p !== "chart" || mayChange(state, "chart", { soon: true })) && p !== "email"));
   const [pane, setPane] = useState<SettingsPane>(fits(at) ? at! : "profile");
   const local = useLocalOnly();
+  const paneScroll = useRef<HTMLElement>(null);
   const [was, setWas] = useState(`${at}:${atAt}`);
   if (was !== `${at}:${atAt}`) {
     setWas(`${at}:${atAt}`);
@@ -2098,6 +2101,14 @@ export function Settings({
     setPane(p);
     onPane?.(p);
   };
+  useLayoutEffect(() => {
+    const el = paneScroll.current;
+    if (!el) return;
+    el.scrollTop = 0;
+    el.querySelectorAll<HTMLElement>("[data-settings-scroll]").forEach((node) => {
+      node.scrollTop = 0;
+    });
+  }, [pane]);
   // A domain being bought: nothing leaves Settings (Back, Esc, the sidebar, an app opened from it) until it's answered.
   const [buying, setBuying] = useState(false);
   useEffect(() => {
@@ -2115,11 +2126,11 @@ export function Settings({
   const people = shared ? 0 : Object.keys(own.find((w) => w.id === ws)?.memberAccess ?? {}).length;
   const logins = shared ? 0 : (state.accounts ?? []).filter((a) => accountIn(state, a).includes(ws)).length + (state.vault ?? []).filter((l) => siteLoginIn(state, l).includes(ws)).length;
   const user = state.account?.user;
-  const who = user?.name?.trim() || state.owner?.name.trim() || user?.email?.split("@")[0] || "You";
+  const who = (local ? state.owner?.name?.trim() : "") || user?.name?.trim() || state.owner?.name.trim() || user?.email?.split("@")[0] || "You";
   const item = (id: SettingsPane, name: string, more: Partial<NavItem> = {}): NavItem => ({ id, name, icon: glyph(GLYPHS[id]), ...more });
   const account: NavItem[] = [
     item("profile", "Profile"),
-    item("plan", "Plan and credit"),
+    item("plan", local ? "Plan" : "Plan and credit"),
     item("usage", "Usage"),
     item("reach", "How bots reach you"),
     ...(BRAINS_ON ? [item("ai", "AI plans")] : []),
@@ -2187,12 +2198,17 @@ export function Settings({
   if (pane === "profile")
     body = (
       <>
-        <PaneHead title="Profile" />
+        <PaneHead title="Profile" sub={local ? "Your name on this Mac. Nothing is sent to an account service." : undefined} />
         <OwnerSettings owner={state.owner} />
       </>
     );
   else if (pane === "plan")
-    body = (
+    body = local ? (
+      <>
+        <PaneHead title="Local: no plan or billing" sub="This Bops runs on your machines. There is no subscription, credit, or external account." />
+        <LocalMachines />
+      </>
+    ) : (
       <>
         <PaneHead title="Plan and credit" />
         <PlanAndCredit state={state} />
@@ -2297,16 +2313,18 @@ export function Settings({
           <span className="flex size-[34px] shrink-0 items-center justify-center rounded-full bg-ink text-[12.5px] font-semibold tracking-[0.02em] text-white">{initialsOf(state)}</span>
           <span className="flex min-w-0 flex-col">
             <span className="truncate text-[13.5px] font-semibold leading-[18px]">{who}</span>
-            <span className="truncate text-[11.5px] leading-4 text-[#8A8A88]">{user?.email ?? (local ? "On this Mac" : "Not signed in")}</span>
+            <span className="truncate text-[11.5px] leading-4 text-[#8A8A88]">{local ? "On this Mac" : (user?.email ?? "Not signed in")}</span>
           </span>
         </div>
         {group("Account", account)}
         {group("Workspace", workspace, switcher)}
         {team_.length > 0 && group("Orgo team only", team_)}
       </nav>
-      <main data-settings-pane={pane} className={`flex min-h-0 min-w-0 flex-1 flex-col ${framed ? "" : "overflow-y-auto pb-8"}`}>
-        {pane === "mac" && <LocalModeNotice />}
-        {body}
+      <main ref={paneScroll} data-settings-pane={pane} className="min-h-0 min-w-0 flex-1 overflow-y-auto" style={{ overflowAnchor: "none" }}>
+        <div key={pane} className={`flex min-h-0 flex-col ${framed ? "h-full" : "pb-8"}`}>
+          {pane === "mac" && <LocalModeNotice />}
+          {body}
+        </div>
       </main>
     </div>
   );

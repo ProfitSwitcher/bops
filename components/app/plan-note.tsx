@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { BopsPlan } from "@/lib/account";
 import { planFix, type OrgoPlan, type PlanShort } from "@/lib/orgo-plans";
 import type { AppState } from "@/lib/types";
+import { useLocalOnly } from "./local-mode";
 
 /** What GET /api/plan answers: the user's Orgo plan (null when Orgo couldn't be asked), Orgo's pages to change it, and the Bops plan when it was read. */
 export type PlanInfo = { plan: OrgoPlan | null; links: { plan: string; usage: string }; bops?: BopsPlan | null };
@@ -42,6 +43,8 @@ export function usePlan(state: AppState) {
  * on Max, which has nothing more).
  */
 export function PlanNote({ info, short, text, className = "", onUpgrade }: { info: PlanInfo; short: PlanShort; text: string; className?: string; onUpgrade?: () => void }) {
+  const local = useLocalOnly();
+  if (local || !info.links?.plan) return <span className={`text-[12px] leading-4 text-[#6B6B6B] ${className}`}>{text}</span>;
   if (short === "bops")
     return (
       <span className={`text-[12px] leading-4 text-[#6B6B6B] ${className}`}>

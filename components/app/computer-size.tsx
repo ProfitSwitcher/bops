@@ -8,6 +8,7 @@ import type { AppState } from "@/lib/types";
 import { Mascot, Spinner } from "./mascot";
 import { Segmented } from "./segmented";
 import { AskInPlace, refreshState } from "./ui";
+import { useLocalOnly } from "./local-mode";
 
 /*
  * The size of the user's free Bops computer, billed by use (lib/computer-size.ts): Pick your computer, asked
@@ -74,6 +75,8 @@ function useSizeSwitch() {
 
 /** Orgo's top up, in the browser, under a refusal for want of credit. */
 function AddCredit({ url, surface }: { url: string; surface: "account" | "computer" }) {
+  const local = useLocalOnly();
+  if (local) return null;
   return (
     <button
       onClick={() => {

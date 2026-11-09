@@ -37,6 +37,7 @@ import { PencilIcon, rowIconBtn, rowTrashBtn, TrashIcon } from "./apps";
 import { act, AppEnvCtx, AppSite, CopyLink, envQuery, isSending, PILL, QUIET, removeApp, short, siteQuery, STATES, UrlLink, useSending } from "./hosted-apps";
 import { InlineConfirm, undash } from "./side-group";
 import { ago, post } from "./ui";
+import { useLocalOnly } from "./local-mode";
 
 /*
  * An app on the web's own page, beyond what hosted-apps.tsx shows of it (lib/hosted-apps.ts): Add app on the
@@ -466,6 +467,7 @@ export function DomainShop<T>({
   /** Its search box takes focus as it shows (Settings, where the button that opened it goes). */
   autoFocus?: boolean;
 }) {
+  const local = useLocalOnly();
   const [busy, setBusyNow] = useState(false);
   const [buying, setBuying] = useState(false);
   const [error, setError] = useState<Refused | null>(null);
@@ -542,7 +544,7 @@ export function DomainShop<T>({
   const why = error && (
     <span role="alert" className={ALERT}>
       {error.error}
-      {error.topUp && (
+      {error.topUp && !local && (
         <>
           {" "}
           <a data-top-up href={error.topUp} target="_blank" rel="noreferrer" className="font-medium text-ink underline underline-offset-2">

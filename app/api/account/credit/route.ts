@@ -1,3 +1,4 @@
+import { localOnly } from "@/lib/local/mode";
 import { isTopUpAmount, TOPUP_AMOUNT_RULE } from "@/lib/credit-topup";
 import { cloudOn } from "@/lib/server/cloud";
 import { loadOrgoKey } from "@/lib/server/orgo-auth";
@@ -22,6 +23,7 @@ const IDEMPOTENCY_KEY = /^[\x21-\x7e]{8,255}$/;
  * when Orgo couldn't look.
  */
 export async function GET() {
+  if (localOnly()) return Response.json({ off: true, local: true });
   const key = await loadOrgoKey();
   if (!key) return Response.json({ error: "Sign in with Orgo first." }, { status: 401 });
   if (!cloudOn()) return Response.json({ off: true });
@@ -42,6 +44,7 @@ export async function GET() {
  * 503 {code: "bops_credit_off"} when Orgo doesn't sell AI credit yet.
  */
 export async function POST(request: Request) {
+  if (localOnly()) return Response.json({ error: "Local mode has no plan or billing." }, { status: 404 });
   const unready = notReady();
   if (unready) return unready;
   const usage = usageRefusal();
