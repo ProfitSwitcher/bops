@@ -816,6 +816,8 @@ export type Message = {
   agent?: string;
   /** Who wrote it, for bot messages. */
   botId?: BotId;
+  /** The model that wrote a bot reply, and which endpoint ran it. `cloud` when the owner opted into a cloud model. */
+  model?: { id: string; endpoint: string; cloud?: true };
   /**
    * Set on the note a bot leaves when it hands work to another ("Sam handed this to Max"): the bot it came
    * from, so a shared workspace never shows it to someone that bot is hidden from (cloud/ws-slice.ts).
@@ -2007,7 +2009,7 @@ export type MacState = {
    * installs it by itself; `installing` while it does), or Chrome. "elsewhere": this server isn't on
    * the user's Mac, so there's nothing to do here.
    */
-  next?: "codex" | "chrome" | "elsewhere";
+  next?: "codex" | "chrome" | "elsewhere" | "worker";
   installing?: boolean;
   checkedAt?: number;
   /** Words that mean a task belongs on the Mac (apps like Messages or Notes, "my desktop"…). */

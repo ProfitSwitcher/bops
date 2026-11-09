@@ -39,7 +39,7 @@ export HF_HUB_OFFLINE=1
 
 The cluster is one exo over Thunderbolt RDMA. Either studio's API on port 52415 sees the same models. The example points the app at `http://127.0.0.1:52415/v1` because Studio 3 runs the app. Change `exo.baseUrl` if the app runs somewhere else, and put the token-checking proxy in front if that address is not loopback.
 
-Downloaded ids you can put on the heavy chain today include `mlx-community/Kimi-K2.7-Code-4bit`, `Qwen3-Coder-480B-8bit`, `GLM-5.2`, `DeepSeek-V4-Flash`, `Kimi-K2.6`, `MiniMax-M2.7`, `MiniMax-M3`, `Nemotron-3-Ultra-550B`, `Qwen3-VL-30B-A3B-8bit`, and `Qwen3.8-27B-bf16`. Use the id `/state` shows. `BOPS_LLM_HEAVY_MODEL` prepends one id without editing the file.
+A model is eligible when at least one node has finished downloading it and no node is still downloading it or has failed. exo can place that copy on the machine that holds the weights, so Kimi and Qwen3-Coder count when they are complete on Studio 1 only. The ids in the example are the ones `/state` reports: `mlx-community/Kimi-K2.7-Code-4bit`, `mlx-community/Qwen3-Coder-480B-A35B-Instruct-8bit`, `mlx-community/GLM-5.2-mxfp4`, and `MiniMaxAI/MiniMax-M2.7`. Add others from `/state` the same way. `BOPS_LLM_HEAVY_MODEL` prepends one id without editing the file.
 
 Environment variables prepend one step without editing the file: `BOPS_LLM_PLANNER_MODEL`, `BOPS_LLM_FAST_MODEL`, `BOPS_LLM_VISION_MODEL`, `BOPS_LLM_EMBED_MODEL`, and `BOPS_LLM_<ROLE>_ENDPOINT`. A value containing `:cloud` is ignored.
 
@@ -69,10 +69,21 @@ npm install
 cp bops.local.example.json bops.local.json
 # edit tokens and hostnames
 node workers/bops-local-worker.mjs
-npx next dev --port 3210 -H 127.0.0.1
+npx next build
+npm run local:server
 ```
 
+`next dev` is for editing the app. `next start` does not run a build made with `output: "standalone"` (the desktop app needs that output). `npm run local:server` copies the static files into `.next/standalone` and runs `node .next/standalone/server.js` on `127.0.0.1:3210`. Fonts are files in `app/fonts`, so the server does not fetch them.
+
 The desktop app is still `npm run app` on Apple silicon. The server comes up with the egress guard installed.
+
+### Start at login
+
+These files do not install themselves.
+
+macOS: copy `scripts/macos/ai.bops.local.plist`, replace `REPLACE_WITH_REPO` with this checkout, and `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/ai.bops.local.plist`. It runs `scripts/local-login.sh`, which starts the worker and the server on `127.0.0.1`.
+
+Windows: `powershell -File scripts/windows/register-bops-login.ps1` registers a task named "Bops local" that runs at logon, also on `127.0.0.1`. `-Remove` deletes it. Build with `npx next build` first.
 
 ### Studio 1 and Geforce5 inference
 
@@ -154,7 +165,7 @@ Runtime means a request while the app is in use. Build means `npm install` or `n
 | TypeSafe | Runtime | Yes/no judgments | Fast local model, or the existing rules if it is down. |
 | PostHog (`posthog-js`, `posthog-node`, the marketing snippet) | Runtime | Usage events | Not loaded. |
 | Telegram, Discord, Slack APIs | Runtime | Team chat | Listeners are not started. |
-| Google Fonts via `next/font` | Build | UI fonts | Downloaded at build, served locally after that. |
+| Geist fonts | Bundled in `app/fonts` | UI fonts | `next/font/local`. No Google Fonts request in dev or prod. |
 | Google Fonts on `site/` | Marketing site only | The public download page | Not the app. |
 | npm registry | Install | Packages | Needed once, not while the app runs. |
 | electron-builder GitHub publish | Release | Update feed for OrgoAI/bops | Not used by `next dev`. Do not publish this fork upstream. |

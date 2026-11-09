@@ -11,6 +11,12 @@ import { isCloudModel } from "./models";
 type Store = Map<string, ChatMessage[]>;
 const g = globalThis as unknown as { bopsLocalResponses?: Store };
 const history: Store = (g.bopsLocalResponses ??= new Map());
+const routes = new Map<string, { model: string; endpoint: string; cloud?: true }>();
+
+/** Which model and endpoint produced a Responses id. The OpenAI SDK drops unknown fields, so this is kept here. */
+export function answerRoute(id: string | undefined) {
+  return id ? routes.get(id) : undefined;
+}
 
 export type ResponseBody = {
   model?: string;
@@ -63,6 +69,8 @@ export async function runResponses(body: ResponseBody, fetchImpl?: typeof fetch)
     },
   ];
   history.set(id, stored.slice(-40));
+  routes.set(id, { model: result.model, endpoint: result.endpoint, ...(result.cloud ? { cloud: true as const } : {}) });
+  if (routes.size > 200) routes.delete(routes.keys().next().value as string);
   if (history.size > 200) history.delete(history.keys().next().value as string);
   const text = output
     .filter((o) => o.type === "message")

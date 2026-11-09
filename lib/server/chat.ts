@@ -17,6 +17,7 @@ import { CRM_TOOL_NAMES, CRM_TOOLS, crmNote, crmNowLine, runCrmTool } from "./cr
 import { ORBIT_OWNER_ONLY, ORBIT_TOOL_NAMES, ORBIT_TOOLS, orbitNote, orbitNowLine, runOrbitTool } from "./orbit";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { openaiClient } from "./openai-client";
+import { answerRoute } from "@/lib/local/responses";
 import { contactLine, createBot, namesTheUser } from "./bots";
 import { creditsOut, noteOutOfCredit, outOfCreditWords } from "./cloud";
 import { noOwnComputer } from "./plan";
@@ -1061,7 +1062,7 @@ async function askTeammate(asker: Bot, toId: string, question: string, chatId: s
     stillOurs(ours);
     recordTokens("chat", res.model, res.usage, t.id);
     const answer = tidyAnswer(res.output_text ?? "").text.trim() || "I don't know.";
-    addMessage({ chatId: pair, role: "bot", botId: t.id, text: answer });
+    addMessage({ chatId: pair, role: "bot", botId: t.id, text: answer, ...modelOn(res.id) });
     asked.push({ botId: t.id, question: question.trim(), answer, questionId: q.id });
     return `${t.name} says: ${answer}`;
   } finally {
@@ -3186,6 +3187,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
         called: called.length ? called : undefined,
         drafts: drafts.length ? drafts : undefined,
         skillProposals: skillProposals.length ? skillProposals : undefined,
+        ...modelOn(response.id),
       });
     // Not the reply to something the user wants kept from someone: it would carry the secret into the shared memory.
     if (reply && !isSecret(opts.answering)) saveToMemory(scopeOf(botId), "chat", chatId, [{ who: botId, text: reply }], { chat: chatName(chatId) });
@@ -3245,6 +3247,12 @@ function appsLine(b: Bot, lookingAt?: string) {
   return [`${owner}'s apps (change_app): ${list}.`, open ? `${owner} has "${open.title}" open beside this chat right now: what they ask to change, without naming another app, is for it.` : ""]
     .filter(Boolean)
     .join(" ");
+}
+
+function modelOn(id: string | undefined): { model?: Message["model"] } {
+  const route = answerRoute(id);
+  if (!route?.model) return {};
+  return { model: { id: route.model, endpoint: route.endpoint, ...(route.cloud ? { cloud: true } : {}) } };
 }
 
 /** Pictures being made, by chat and bot ("<chatId> <botId>"), so the bot shows as typing until they're in. */

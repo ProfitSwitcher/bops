@@ -1600,6 +1600,14 @@ function MemberSendLine({ send, retry }: { send: NonNullable<Message["memberSend
   );
 }
 
+function ModelLine({ model }: { model: NonNullable<Message["model"]> }) {
+  return (
+    <div className={`pl-3 text-[11px] leading-[14px] ${model.cloud ? "font-medium text-[#8A5A12]" : "text-[#9A9A98]"}`}>
+      {model.cloud ? "Cloud model" : "Local"} · {model.id} · {model.endpoint}
+    </div>
+  );
+}
+
 function MessageRow({ m, state, showSender, continued, sessionById, chipIds, onOpenThread, onShowScreen, onShowMac, replyCount, root, onReply, onOpenReplies, onDelete, inReplies, arrival, apiRun }: RowProps) {
   // Decided once, as the row mounts: a poll or a new tapback draws it again but never replays it.
   // Yours carries on its pending copy's motion (a negative delay starts it partway, or past the end).
@@ -2085,6 +2093,7 @@ function MessageRow({ m, state, showSender, continued, sessionById, chipIds, onO
                   </div>
                 )
               )}
+              {m.model && <ModelLine model={m.model} />}
             </div>
           </div>
           {actions}
@@ -2243,6 +2252,7 @@ export function PairSheet({ state, pairId, focusId, onClose }: { state: AppState
                   <div className={`whitespace-pre-wrap rounded-[18px] bg-[#F2F2F0] px-3.5 py-2 text-[14px] leading-5 [overflow-wrap:anywhere] ${m.id === focusId ? "shadow-[0_0_0_2px_#0A0A0A1F]" : ""}`}>
                     <Rich text={m.text} botId={m.botId} />
                   </div>
+                  {m.model && <ModelLine model={m.model} />}
                 </div>
               </div>
             </Fragment>

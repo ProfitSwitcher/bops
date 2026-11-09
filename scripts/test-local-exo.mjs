@@ -49,8 +49,9 @@ function json(res, body, status = 200) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }
-const done = (id) => ({ DownloadCompleted: { nodeId: "studio1", shardMetadata: { modelCard: { modelId: id } }, total: { inBytes: 10 } } });
-const busy = (id) => ({ DownloadOngoing: { nodeId: "studio3", shardMetadata: { modelCard: { modelId: id } }, downloadProgress: { downloaded: { inBytes: 1 }, total: { inBytes: 10 } } } });
+const shard = (id) => ({ PipelineShardMetadata: { modelCard: { modelId: id } } });
+const done = (id) => ({ DownloadCompleted: { nodeId: "studio1", shardMetadata: shard(id), total: { inBytes: 10 } } });
+const busy = (id) => ({ DownloadOngoing: { nodeId: "studio3", shardMetadata: { TensorShardMetadata: { modelCard: { modelId: id } } }, downloadProgress: { downloaded: { inBytes: 1 }, total: { inBytes: 10 } } } });
 
 await check("only DownloadCompleted models count, and a download still in progress does not", async () => {
   const inventory = modelsFromExoState({
@@ -62,6 +63,10 @@ await check("only DownloadCompleted models count, and a download still in progre
   assert.deepEqual(inventory.downloaded.sort(), ["Qwen3-Coder-480B-8bit", "mlx-community/Kimi-K2.7-Code-4bit"]);
   assert.ok(inventory.downloading.includes("GLM-5.3-Flash"));
   assert.ok(inventory.downloading.includes("MiniMax-M2.7"));
+  const oneNode = modelsFromExoState({
+    downloads: { studio1: [done("mlx-community/Kimi-K2.7-Code-4bit")], studio3: [] },
+  });
+  assert.deepEqual(oneNode.downloaded, ["mlx-community/Kimi-K2.7-Code-4bit"]);
 });
 
 await check("heavy uses a downloaded exo model and never asks for one that is still downloading", async () => {

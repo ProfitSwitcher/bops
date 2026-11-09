@@ -1,6 +1,7 @@
 import "server-only";
 import { existsSync } from "node:fs";
 import type { MacState } from "@/lib/types";
+import { localOnly, loadConfig } from "@/lib/local/mode";
 import { findCodex, installCodex, installStatus } from "./codex-cli";
 import { CHROME } from "./local";
 import { loopHere, onPostgres } from "./persist";
@@ -41,7 +42,14 @@ export async function checkMac() {
   let ready = false;
   let reason: string | undefined;
   let next: MacState["next"];
-  if (!onTheMac()) {
+  if (localOnly()) {
+    const up = await localWorkerUp();
+    if (up) ready = true;
+    else {
+      next = "worker";
+      reason = "Start the local worker on this Mac (node workers/bops-local-worker.mjs) so bots can use the screen.";
+    }
+  } else if (!onTheMac()) {
     next = "elsewhere";
     reason = "Bots work on your Mac in the Bops app on your Mac.";
   } else if (!findCodex()) {
@@ -66,8 +74,28 @@ export async function checkMac() {
 
 /** Retry: install the CLI again if it's still missing (a failed install isn't retried by itself), then look again. */
 export async function retryCodex() {
-  if (!findCodex() && onTheMac()) installCodex(() => void checkMac().catch(() => {}));
+  if (!localOnly() && !findCodex() && onTheMac()) installCodex(() => void checkMac().catch(() => {}));
   await checkMac();
+}
+
+async function localWorkerUp() {
+  const workers = loadConfig().workers.filter((w) => {
+    try {
+      const host = new URL(w.url).hostname;
+      return host === "127.0.0.1" || host === "localhost" || host === "::1";
+    } catch {
+      return false;
+    }
+  });
+  for (const worker of workers) {
+    try {
+      const res = await fetch(`${worker.url}/health`, { signal: AbortSignal.timeout(800) });
+      if (res.ok) return true;
+    } catch {
+      /* the next configured loopback worker */
+    }
+  }
+  return false;
 }
 
 const g = globalThis as typeof globalThis & { __bopsMacCheck?: ReturnType<typeof setInterval> };
