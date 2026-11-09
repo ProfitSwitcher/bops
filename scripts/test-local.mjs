@@ -33,8 +33,8 @@ const { parseConfig, useConfig, loadConfig, localOnly, callStartAllowed } = awai
 const { clearHealth, withRole, checkEndpoint } = await import("../lib/local/endpoints.ts");
 const { chat, embed, looseToolCalls } = await import("../lib/local/provider.ts");
 const { localScreens, screensAdvanced, localOrgoCall, localOrgoAnswered, resetLocalComputersForTests, localComputerMissing } = await import("../lib/local/orgo-adapter.ts");
-const { localComputerTurn } = await import("../lib/local/computer-session.ts");
-const { isSimpleLocalChat } = await import("../lib/local/fast-chat.ts");
+const { localComputerTurn, screenResetPlan, workerAction } = await import("../lib/local/computer-session.ts");
+const { isSimpleLocalChat, localNeedsMemory, stripImitatedDeeds } = await import("../lib/local/fast-chat.ts");
 const { transcribeLocal } = await import("../lib/local/speech.ts");
 const { deleteSession, listFacts } = await import("../lib/local/memory-store.ts");
 const { runResponses, resetResponsesForTests } = await import("../lib/local/responses.ts");
@@ -525,6 +525,80 @@ await check("a local computer task talks to the worker, not an agents API", asyn
   assert.equal(seen.some((u) => String(u).includes("agents")), false);
   vision.server.close();
   worker.server.close();
+});
+
+await check("a local computer task records each step and never shells out to xdotool", async () => {
+  clearHealth();
+  const steps = [];
+  let bash = false;
+  const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "" });
+  const vision = await listen(async (req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "qwen3.8:27b-q8_0" }] });
+    json(res, {
+      choices: [
+        {
+          message: {
+            content: "Done.",
+            tool_calls: [{ id: "c1", type: "function", function: { name: "computer", arguments: JSON.stringify({ done: true, actions: [{ type: "move", x: 640, y: 480 }] }) } }],
+          },
+        },
+      ],
+    });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "v", baseUrl: `${vision.url}/v1`, provider: "ollama" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [{ endpoint: "v", model: "qwen3.8:27b-q8_0" }] }, embed: { chain: [] }, heavy: { chain: [] } },
+    },
+    workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
+  });
+  const text = await localComputerTurn("task-steps", "screenshot and move to the center", fetch, (action) => {
+    steps.push(action);
+    for (const session of worker.sessions.values()) {
+      if (session.actions.some((a) => a.op === "bash" && /xdotool|DISPLAY=|\/usr\/local\/bin|\/root|\/opt\/bops/.test(JSON.stringify(a.body)))) bash = true;
+    }
+  });
+  assert.match(text, /Done/);
+  assert.equal(steps.length, 1);
+  assert.equal(steps[0].type, "move");
+  assert.equal(workerAction(steps[0]).path, "/move");
+  assert.equal(bash, false);
+  assert.equal(screenResetPlan().shell, null);
+  vision.server.close();
+  worker.server.close();
+});
+
+await check("a repeated computer action stops the loop", async () => {
+  clearHealth();
+  let asked = 0;
+  const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "" });
+  const vision = await listen(async (req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "qwen3.8:27b-q8_0" }] });
+    asked += 1;
+    json(res, { choices: [{ message: { content: "", tool_calls: [{ id: "c", type: "function", function: { name: "computer", arguments: JSON.stringify({ actions: [{ type: "move", x: 1, y: 1 }] }) } }] } }] });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "v", baseUrl: `${vision.url}/v1`, provider: "ollama" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [{ endpoint: "v", model: "qwen3.8:27b-q8_0" }] }, embed: { chain: [] }, heavy: { chain: [] } },
+    },
+    workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
+  });
+  const text = await localComputerTurn("task-repeat", "move");
+  assert.match(text, /same action repeated/);
+  assert.equal(asked, 2);
+  vision.server.close();
+  worker.server.close();
+});
+
+await check("a local screen reset does not write /usr/local/bin", async () => {
+  assert.equal(screenResetPlan(true).shell, null);
+  assert.equal(screenResetPlan(false).shell, "/usr/local/bin/bops-reset-screen");
+  const stripped = stripImitatedDeeds('On it.\n[What was done: started the task "Screenshot and center mouse"]');
+  assert.equal(stripped.claimedTask, "Screenshot and center mouse");
+  assert.equal(stripped.text.includes("[What was done:"), false);
+  assert.equal(localNeedsMemory("Start a task to take a screenshot"), false);
+  assert.equal(localNeedsMemory("remember that I prefer tea"), true);
 });
 
 await check("bash on the worker returns exit_code instead of failing the request", async () => {

@@ -14,6 +14,9 @@ import { CRM_TOOL_NAMES, CRM_TOOLS, crmStep, runCrmTool } from "./crm";
 import { callApi, callApiTool, usableKeys } from "./keys";
 import { changeFiles, changeFilesTool, type ChangeArgs } from "./repo-change";
 import { readSkill, READ_SKILL_TOOL } from "./workspace-skills";
+import { actOnLocalComputer } from "@/lib/local/computer-session";
+import { localOrgoCall } from "@/lib/local/orgo-adapter";
+import { localOnly } from "@/lib/local/mode";
 import { bot, patchSession, session, stateEpoch } from "./store";
 import { recordTokens, usageTags } from "./usage";
 import { othersThread, outsideThread, type AppApproval, type Session } from "@/lib/types";
@@ -371,7 +374,7 @@ function record(t: ComputerTurn, o: OutputItem, more: boolean) {
 async function screen(t: ComputerTurn) {
   const shot = () => orgo.screenshot(t.computerId, screenId(t.display), 1, "png", { task: true, signal: t.signal });
   const png = await shot().catch(async (e: unknown) => {
-    if (!computerAsleepError(e) && !computerWakingError(e)) throw e;
+    if (localOnly() || (!computerAsleepError(e) && !computerWakingError(e))) throw e;
     await orgo.bash(t.computerId, "true", 30, { signal: t.signal });
     return shot();
   });
@@ -390,6 +393,7 @@ async function act(t: ComputerTurn, o: OutputItem): Promise<{ out: unknown; note
   const actions = o.actions ?? (o.action ? [o.action] : []);
   const doing = actions.filter((a) => a.type !== "screenshot");
   for (const a of actions) t.step(STEP_TOOL[a.type] ?? a.type, describeAction(a));
+  if (localOnly()) return actOnWorker(t, o, doing);
   let note: string | undefined;
   if (doing.length) {
     const X = `DISPLAY=:${t.display} xdotool`;
@@ -421,6 +425,23 @@ async function act(t: ComputerTurn, o: OutputItem): Promise<{ out: unknown; note
   }
   return { out: { type: "computer_call_output", call_id: o.call_id, output: await screen(t) }, note };
 }
+
+/** Clicks and keys on this Mac go to the worker. Nothing is run with xdotool, and nothing is written under /root. */
+async function actOnWorker(t: ComputerTurn, o: OutputItem, doing: Action[]): Promise<{ out: unknown; note?: string }> {
+  let note: string | undefined;
+  try {
+    for (const a of doing) {
+      if (a.type === "wait") continue;
+      await actOnLocalComputer(t.computerId, a);
+    }
+  } catch (e) {
+    if (t.signal.aborted) throw e;
+    note = `The local worker couldn't do that (${(e as Error).message}). The screenshot shows the screen now.`;
+  }
+  return { out: { type: "computer_call_output", call_id: o.call_id, output: await screen(t) }, note };
+}
+
+const LINUX_ONLY = /xdotool|DISPLAY=|\/root(?:\/|$)|\/opt\/bops(?:\/|$)|\/usr\/local\/bin(?:\/|$)/;
 
 const KEYS: Record<string, string> = {
   ctrl: "ctrl", control: "ctrl", alt: "alt", option: "alt", shift: "shift", cmd: "super", command: "super", meta: "super", super: "super", win: "super",
@@ -640,6 +661,7 @@ function tabsLine(tabs: NonNullable<PageRun["tabs"]>): string {
  * Its answer as the model reads it, with its receipt (what changed), or why it failed (`run` undefined).
  */
 async function pageScript(t: ComputerTurn, script: string, seconds: number): Promise<{ text: string; run?: PageRun }> {
+  if (localOnly()) return { text: "Page scripts aren't on this Mac. Do this step on the screen." };
   if (!script.trim()) return { text: "Failed: the script is empty." };
   if (!(await t.pages?.().catch(() => false))) return { text: "Failed: the page tools aren't on this computer yet. Do this step on the screen." };
   const limit = Math.min(120, Math.max(5, seconds));
@@ -762,9 +784,17 @@ async function runFunction(t: ComputerTurn, o: OutputItem, guard: PageGuard = ne
     if (o.name === "run_command") {
       const command = String(args.command ?? "");
       t.step("command", `ran ${command.slice(0, 100)}`);
+      if (localOnly()) {
+        if (LINUX_ONLY.test(command)) output = "That command isn't run on this Mac. Use the screen.";
+        else {
+          const r = await localOrgoCall<{ output: string; exit_code: number }>("POST", `/computers/${encodeURIComponent(t.computerId)}/bash`, { command });
+          output = `exit code ${r.exit_code}\n${clip(r.output)}`;
+        }
+      } else {
       const timeout = Math.min(300, Math.max(5, Number(args.timeout_seconds) || 60));
       const r = await orgo.bash(t.computerId, `mkdir -p /workspace && cd /workspace && export DISPLAY=:${t.display}\n${command}`, timeout, { signal: t.signal });
       output = `exit code ${r.exit_code}\n${clip(r.output)}`;
+      }
     } else if (o.name === "page_script") {
       t.step("page", String(args.what ?? "").trim().slice(0, 100) || "used the page");
       const script = String(args.script ?? "");

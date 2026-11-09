@@ -1051,8 +1051,13 @@ function ResetMenu({ state, bot: b, screen, busy }: { state: AppState; bot: Bot;
     setConfirm(null);
     setRunning(true);
     setNote("Resetting…");
-    const j = (await (await post("/api/computer/reset", { botId: b.id, ...body })).json()) as { results?: Result[]; error?: string };
+    const res = await post("/api/computer/reset", { botId: b.id, ...body });
+    const j = (await res.json().catch(() => ({}))) as { results?: Result[]; error?: string };
     setRunning(false);
+    if (!res.ok) {
+      setNote(j.error ?? "The reset didn't finish.");
+      return;
+    }
     const rs = j.results ?? [];
     const done = rs.reduce((n, r) => n + r.reset.length, 0);
     const skipped = rs.flatMap((r) => r.skipped.map((x) => `${rs.length > 1 ? `${r.name}'s ` : ""}screen ${x.screen} (${x.why.charAt(0).toLowerCase()}${x.why.slice(1)})`));

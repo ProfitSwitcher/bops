@@ -26,6 +26,7 @@ import { forgetScreens, listedScreenId, pageAt, sameComputer, screenEndpoint, sc
 import { saveFrame } from "./frames";
 import { namesSite, onASite } from "@/lib/task-sites";
 import { siteOf } from "@/lib/watch-sites";
+import { screenResetPlan } from "@/lib/local/computer-session";
 import { localComputerMissing } from "@/lib/local/orgo-adapter";
 import { localOnly } from "@/lib/local/mode";
 import { ensureTailnet } from "./tailnet";
@@ -1877,6 +1878,7 @@ export async function resetScreens(botId: string, displays: number[] = DISPLAYS,
       reset.push(d);
     }
   }
+  if (reset.length && !screenResetPlan().shell) return { reset: reset.map((d) => DISPLAYS.indexOf(d) + 1), skipped };
   if (reset.length) {
     // A stopped task lets go of its screen when its turn ends.
     if (force) await new Promise((r) => setTimeout(r, 1500));
@@ -2698,7 +2700,7 @@ async function computerToolTurns(sessionId: string, at: { computerId: string; di
     logTaskRoute(sessionId);
   }
   // Its skills and apps on its computer (capabilities/skills), for the scripts they bring.
-  if (!at.resuming) await copySkillsToComputer(b.id, at.computerId, orgo.bash).catch((e: Error) => console.warn(`[skills] ${sessionId}: ${e.message}`));
+  if (!at.resuming && !localOnly()) await copySkillsToComputer(b.id, at.computerId, orgo.bash).catch((e: Error) => console.warn(`[skills] ${sessionId}: ${e.message}`));
   // What this turn runs on: the route (a tier up for each bump), or for a thread from before routes, the old rule.
   const now = session(sessionId)!;
   const config = taskConfig(now.route) ?? { model: now.effort === "high" ? HARD_MODEL : SESSION_MODEL, effort: now.effort ?? "medium" };
@@ -2776,6 +2778,7 @@ async function computerToolTurns(sessionId: string, at: { computerId: string; di
  * commands are the bot's; a bot with none is started exactly as before.
  */
 async function startOrgoExecutor(computerId: string, display: number, env: { id: string; remoteUrl: string }, b?: Bot) {
+  if (localOnly()) return;
   const key = Buffer.from(await executorKey()).toString("base64");
   const withBin = BRAINS_ON && !!b && aiOf(b, getState()).agents.some((x) => isCli(x.kind));
   if (withBin) await ensureBrainTools(computerId);
@@ -3171,13 +3174,18 @@ async function run(sessionId: string) {
       // A brain's call that needs the OK is held, never paused (composio.ts held): it has no resume of its own.
       turn = (input) => onBrainTurns.turn(input ?? "");
       compact = onBrainTurns.compact;
+    } else if (localOnly()) {
+      // The Mac worker does the clicks. The computer tool's shell is Linux (xdotool, /root, /opt/bops).
+      const { actionStep, localComputerTurn } = await import("@/lib/local/computer-session");
+      turn = (input) =>
+        localComputerTurn(sessionId, input ?? session(sessionId)?.goal ?? "", fetch, (action) => {
+          const recorded = actionStep(action);
+          step(sessionId, recorded.tool, recorded.detail);
+        });
     } else if (onComputerTool) {
       const onTool = await computerToolTurns(sessionId, { computerId, display, sharedWith: c.id !== b.id ? c.name : undefined, resuming, model: bopsModel });
       turn = onTool;
       compact = async () => void (await onTool(undefined, undefined, true));
-    } else if ((await import("@/lib/local/mode")).localOnly()) {
-      const { localComputerTurn } = await import("@/lib/local/computer-session");
-      turn = (input) => localComputerTurn(sessionId, input ?? session(sessionId)?.goal ?? "");
     } else {
       if (!resuming) {
         const route = s.route ?? (await routeTask(b.effort, s.goal, b.id, { model: bopsModel }));
@@ -3481,7 +3489,7 @@ async function run(sessionId: string) {
       // Its brain's process ends with the run (a later turn starts it again, on the same session).
       await closeBrain?.().catch((e: Error) => console.warn(`[brains] ${sessionId}: ${e.message}`));
       if (folder) stopExecutor(sessionId, executor, folder, paused);
-      else if (!elsewhere) {
+      else if (!elsewhere && !localOnly()) {
         const envId = session(sessionId)?.env?.id;
         await orgo
           .bash(

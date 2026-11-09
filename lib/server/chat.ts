@@ -19,7 +19,7 @@ import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { openaiClient } from "./openai-client";
 import { answerRoute } from "@/lib/local/responses";
 import { localOnly } from "@/lib/local/mode";
-import { chatStage, isSimpleLocalChat } from "@/lib/local/fast-chat";
+import { chatStage, isSimpleLocalChat, stripImitatedDeeds } from "@/lib/local/fast-chat";
 import { contactLine, createBot, namesTheUser } from "./bots";
 import { creditsOut, noteOutOfCredit, outOfCreditWords } from "./cloud";
 import { noOwnComputer } from "./plan";
@@ -593,7 +593,8 @@ function history(chatId: string, selfId: string | undefined, opts: { unattended?
       // What the bot did for this reply (not in its words): who it asked and what they said, the
       // tasks it started, the task this is the result of. Without it a bot can't say why it did
       // something and makes up a reason.
-      const did = m.role === "bot" ? deeds(m) : "";
+      // Local mode keeps the deed off the assistant text. The model was copying "[What was done: started the task …]" instead of calling start_task.
+      const did = m.role === "bot" && !localOnly() ? deeds(m) : "";
       // What Select picked on an app's page, in the owner's words: where each is in the page's code (Message.picks).
       const code = m.picks?.length ? ` [Bops: in the page's code, ${m.picks.map((p) => `${p.line} is ${p.code}`).join("; ")}]` : "";
       // Files the user added with it (Message.files): where they are, for the bot to open (on its computer, or another's).
@@ -2537,6 +2538,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
           return memoryBlock(scopeOf(botId), about, localOnly() ? 800 : 2500, { search });
         });
     const now = [
+      localOnly() ? "Do not write a line like [What was done: ...]. That note is not how work starts. Call start_task to start a task." : "",
       ...nowLines(b),
       // (On a member's turn, another bot's work on a shared screen is named only when they see that bot.)
       await computerBriefing(botId, member ? { sees: (id) => memberLevel(member, id) !== "none" } : {}).catch(() => ""),
@@ -3194,7 +3196,16 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     if (opts.emailBack) for (const id of sessionIds) patchSession(id, { emailBack: opts.emailBack });
     // A thread this turn sent something the user kept between us to is kept between us too, and so is the reply naming it (Session.secret).
     if (sessionIds.length && isSecret(opts.answering)) for (const id of sessionIds) patchSession(id, { secret: true });
-    const tidy = tidyAnswer(response.output_text ?? "");
+    let spoken = response.output_text ?? "";
+    if (localOnly()) {
+      const imitated = stripImitatedDeeds(spoken);
+      if (imitated.claimedTask && !sessionIds.length && !bg) {
+        const goal = lastWords(chatId);
+        sessionIds.push(startSession({ botId, goal, title: imitated.claimedTask, chatId, sentVia: "you", where: "auto" }).id);
+      }
+      spoken = imitated.text;
+    }
+    const tidy = tidyAnswer(spoken);
     const text = tidy.text.trim();
     if (bg) {
       const tag = { id: bg.routineId };

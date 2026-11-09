@@ -154,8 +154,7 @@ export async function localOrgoCall<T>(method: string, path: string, body?: unkn
   if (method === "GET" && rest === "/resize") return { current_disk_gb: 80, max_disk_gb: 80 } as T;
   if (method === "POST" && rest === "/resume") return { waking: false } as T;
   if (method === "POST" && (rest === "/restart" || rest === "/webrtc")) return { webrtc: false } as T;
-  if (method === "POST" && rest === "/bash") return forward(id, "/bash", body) as T;
-  if (method === "POST" && (rest === "/click" || rest === "/type" || rest === "/key")) return forward(id, rest, body) as T;
+  if (method === "POST" && (rest === "/bash" || rest === "/click" || rest === "/type" || rest === "/key" || rest === "/scroll" || rest === "/move")) return forward(id, rest, body) as T;
   return {} as T;
 }
 

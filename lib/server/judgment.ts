@@ -14,8 +14,8 @@ import { ownerName } from "./store";
  */
 export async function needsMemory(said: string) {
   if (!said.trim()) return false;
-  // Small talk on this machine does not spend a model call deciding whether to search memory.
-  if ((await import("@/lib/local/mode")).localOnly() && said.trim().length < 200 && !/\b(remember|prefer|always|usually|my |i'm |i am )\b/i.test(said)) return false;
+  // A task or a plain question on this machine does not spend a model call deciding whether to search memory.
+  if ((await import("@/lib/local/mode")).localOnly() && !(await import("@/lib/local/fast-chat")).localNeedsMemory(said)) return false;
   const owner = ownerName();
   const a = await decide(
     { app: "Bops" },

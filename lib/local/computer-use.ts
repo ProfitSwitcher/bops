@@ -9,7 +9,7 @@ export type ComputerAction = {
   x?: number;
   y?: number;
   text?: string;
-  keys?: string[];
+  keys?: string[] | null;
   button?: string;
   scroll_x?: number;
   scroll_y?: number;
@@ -20,21 +20,28 @@ const TOOL: ToolDef = {
   type: "function",
   function: {
     name: "computer",
-    description: "Actions to take on the current screenshot. Use an empty actions list and say you are done when the task is finished.",
+    description: "Actions on the current screenshot. When the goal is finished, set done true in this same call, together with the final action if one is still needed.",
     parameters: { type: "object", properties: { actions: { type: "array" }, done: { type: "boolean" } } },
   },
 };
+
+export function computerMaxSteps(): number {
+  const n = Number(process.env.BOPS_COMPUTER_MAX_STEPS);
+  return Number.isFinite(n) && n >= 1 ? Math.floor(n) : 25;
+}
 
 export async function runComputerUseLoop(opts: {
   goal: string;
   maxSteps?: number;
   screenshot: () => Promise<{ mime: string; base64: string } | null>;
   act: (actions: ComputerAction[]) => Promise<string>;
+  onStep?: (action: ComputerAction) => void;
   fetchImpl?: typeof fetch;
 }): Promise<{ text: string; steps: number; degraded?: string }> {
   const notes: string[] = [];
   let degraded: string | undefined;
-  const max = opts.maxSteps ?? 8;
+  let last = "";
+  const max = opts.maxSteps ?? computerMaxSteps();
   for (let step = 1; step <= max; step++) {
     const shot = await opts.screenshot();
     if (!shot) {
@@ -47,7 +54,11 @@ export async function runComputerUseLoop(opts: {
         tools: [TOOL],
         fetchImpl: opts.fetchImpl,
         messages: [
-          { role: "system", content: "You control a computer from screenshots. Call computer with the next actions, or with done true when the goal is finished. Coordinates are pixels of the screenshot." },
+          {
+            role: "system",
+            content:
+              "You control a computer from screenshots. Call computer with the next actions. When the goal is finished, set done true in that same call, including the final action if one is still needed. Do not repeat an action that already ran. Coordinates are pixels of the screenshot.",
+          },
           {
             role: "user",
             content: [
@@ -70,13 +81,18 @@ export async function runComputerUseLoop(opts: {
     try {
       const args = JSON.parse(call.arguments || "{}") as { actions?: ComputerAction[]; done?: boolean };
       actions = Array.isArray(args.actions) ? args.actions : [];
-      done = args.done === true || actions.length === 0;
+      done = args.done === true;
     } catch {
       return { text: "The vision model returned an action that wasn't valid JSON.", steps: step, degraded: "bad action json" };
     }
-    if (done) return { text: result.content || "Done.", steps: step, degraded };
+    if (!actions.length) return { text: result.content || "Done.", steps: step, degraded };
+    const signature = JSON.stringify(actions);
+    if (signature === last) return { text: result.content || "Stopped: the same action repeated.", steps: step - 1, degraded: "repeated action" };
+    last = signature;
     const note = await opts.act(actions);
+    for (const action of actions) opts.onStep?.(action);
     notes.push(note);
+    if (done) return { text: result.content || "Done.", steps: step, degraded };
   }
-  return { text: "Stopped after the maximum number of computer-use steps.", steps: max, degraded };
+  return { text: "Stopped after the maximum number of computer-use steps.", steps: max, degraded: "max steps" };
 }

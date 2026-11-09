@@ -27,5 +27,7 @@ export async function POST(request: Request) {
       }
     }),
   );
+  const failed = results.map((r) => r.error).filter((e): e is string => !!e);
+  if (failed.length) return Response.json({ results, error: failed.join(" ") }, { status: 502 });
   return Response.json({ results });
 }
