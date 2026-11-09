@@ -33,7 +33,7 @@ import { OpenBotComputer } from "./app-envs";
 import { WorkspaceDomains } from "./workspace-domains";
 import { ChatSwitch } from "./chat-switch";
 import { BotSettingsPage } from "./bot-settings";
-import { LocalModeNotice } from "./local-mode";
+import { CloudAnswerBadge, LocalModeNotice } from "./local-mode";
 import type { SettingsSection } from "@/lib/bot-settings";
 
 /** Your Mac's tab, and the chat's bot's profile (it follows the chat, like the computer tab); both open on demand. */
@@ -925,6 +925,7 @@ function Bops({ state }: { state: AppState | null }) {
     <ToPicker state={state} onOpenChat={openChat} onCancel={() => setComposing(false)} />
   ) : (
     <div className="relative flex min-h-0 min-w-0 flex-col">
+      <CloudAnswerBadge />
       <ChatView
         state={state}
         chat={chat}

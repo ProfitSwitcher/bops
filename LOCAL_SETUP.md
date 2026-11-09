@@ -107,6 +107,14 @@ If you later want an isolated Linux desktop, UTM or Tart can run one from an ima
 
 Human approval for risky tool calls is unchanged. The worker runs an action only after the app has already sent it.
 
+## Optional cloud models
+
+Local models stay the default. Grok, ChatGPT, and Claude are usable only after you turn on **Allow cloud models** in Settings and save a key for that provider. A role still stays on the local chain unless you set that role to **Cloud first** or **Cloud if local fails**. There is no silent fallback.
+
+The key is stored in the macOS Keychain or Windows DPAPI (CurrentUser). If neither is available, it is written to a file mode `0600` under the app data directory. It is not written to logs. It is sent only to that provider's own API: `api.x.ai`, `api.openai.com`, or `api.anthropic.com`. While the switch is on and a key is saved, the egress guard allows that host and no other public host. Turn the switch off, or remove the key, and the host is refused again.
+
+Model ids come from each provider's models endpoint (Test in Settings) or from the model field you type. The chat shows a **Cloud model** badge when the latest answer came from one of these providers.
+
 ## What is offline
 
 Settings shows the same list.

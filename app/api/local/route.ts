@@ -1,3 +1,4 @@
+import { publicCloudStatus } from "@/lib/local/cloud";
 import { candidates } from "@/lib/local/endpoints";
 import { exoWarmup } from "@/lib/local/exo";
 import { offlineFeatures } from "@/lib/local/features";
@@ -28,5 +29,6 @@ export async function GET() {
     roles,
     endpoints: cfg.llm.endpoints.map((e) => ({ id: e.id, baseUrl: e.baseUrl, provider: e.provider, authenticated: !!(e.apiKey && e.apiKey !== "") })),
     workers: cfg.workers.map((w) => ({ id: w.id, url: w.url, kind: w.kind ?? "native" })),
+    cloud: publicCloudStatus(),
   });
 }

@@ -4,6 +4,7 @@
  */
 import { authHeaders, checkEndpoint, originOf, withRole, type Attempt } from "./endpoints";
 import { beginExoWarmup, endExoWarmup, exoLoadTimeoutMs } from "./exo";
+import { cloudPlan, noteLocalAnswer, redactSecrets, tryCloudChat } from "./cloud";
 import { assertLocalModel, CloudModelError, hasModel } from "./models";
 import type { Role } from "./mode";
 
@@ -23,6 +24,8 @@ export type ChatResult = {
   toolCalls: ToolCall[];
   usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
   degraded?: string;
+  /** Set only when this answer came from a provider the owner explicitly enabled. */
+  cloud?: { provider: string; name: string };
 };
 
 const CHAT_MS = 180_000;
@@ -40,17 +43,33 @@ export async function chat(opts: {
 }): Promise<ChatResult> {
   if (opts.preferModel) assertLocalModel(opts.preferModel);
   const hasImage = JSON.stringify(opts.messages).includes("image_url");
-  const { value, attempt, skipped } = await withRole(
-    opts.role,
-    async (attempt) => complete(attempt, opts.messages, opts.tools ?? [], hasImage, opts.fetchImpl),
-    { preferModel: opts.preferModel, fetchImpl: opts.fetchImpl },
-  );
-  return {
-    ...value,
-    model: attempt.model,
-    endpoint: attempt.endpoint.id,
-    ...(skipped.length ? { degraded: skipped.join(" | ") } : {}),
-  };
+  const plan = cloudPlan(opts.role);
+  const notes: string[] = [];
+  if (plan === "prefer") {
+    try {
+      return await tryCloudChat(opts);
+    } catch (e) {
+      notes.push(redactSecrets((e as Error).message));
+    }
+  }
+  try {
+    const { value, attempt, skipped } = await withRole(
+      opts.role,
+      async (attempt) => complete(attempt, opts.messages, opts.tools ?? [], hasImage, opts.fetchImpl),
+      { preferModel: opts.preferModel, fetchImpl: opts.fetchImpl },
+    );
+    noteLocalAnswer();
+    const degraded = [...notes, ...skipped].filter(Boolean).join(" | ");
+    return { ...value, model: attempt.model, endpoint: attempt.endpoint.id, ...(degraded ? { degraded } : {}) };
+  } catch (e) {
+    if (plan !== "fallback") throw e;
+    try {
+      const cloud = await tryCloudChat(opts);
+      return { ...cloud, degraded: redactSecrets(`${(e as Error).message} | used the cloud fallback you turned on`) };
+    } catch (err) {
+      throw new Error(redactSecrets(`${(e as Error).message} | ${(err as Error).message}`));
+    }
+  }
 }
 
 async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], hasImage: boolean, fetchImpl: typeof fetch = fetch): Promise<Omit<ChatResult, "model" | "endpoint">> {

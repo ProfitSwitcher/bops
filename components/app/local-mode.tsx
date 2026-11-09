@@ -56,6 +56,180 @@ export function LocalModeNotice() {
           </li>
         ))}
       </ul>
+      <CloudModels />
+    </div>
+  );
+}
+
+type CloudProvider = { id: "xai" | "openai" | "anthropic"; name: string; host: string; hasKey: boolean };
+type CloudStatus = {
+  allow: boolean;
+  providers: CloudProvider[];
+  roles: Record<string, { mode: "prefer" | "fallback"; provider: CloudProvider["id"]; model: string }>;
+  last: { name: string; model: string; provider: string } | null;
+};
+
+const ROLE_NAMES = ["heavy", "planner", "fast", "vision", "embed"] as const;
+
+/** Optional keys. They stay on this machine and are sent only to that provider. */
+function CloudModels() {
+  const [status, setStatus] = useState<CloudStatus | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [note, setNote] = useState<string | null>(null);
+  const [models, setModels] = useState<Record<string, string[]>>({});
+  const load = () =>
+    void fetch("/api/local/cloud")
+      .then((r) => r.json())
+      .then((body: CloudStatus) => setStatus(body))
+      .catch(() => {});
+  useEffect(() => {
+    load();
+  }, []);
+  const send = async (body: Record<string, unknown>) => {
+    const res = await fetch("/api/local/cloud", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const json = (await res.json().catch(() => ({}))) as CloudStatus & { error?: string; models?: string[] };
+    if (!res.ok) {
+      setNote(json.error || "That did not work.");
+      return json;
+    }
+    if (json.providers) setStatus(json);
+    setNote(null);
+    return json;
+  };
+  if (!status) return null;
+  return (
+    <div className="mt-2 flex flex-col gap-2 border-t border-[#E6E6E3] pt-2">
+      <span className="text-[13px] font-semibold text-ink">Cloud models (optional)</span>
+      <span>Off unless you turn this on and save a key. A role uses a cloud model only if you pick it for that role, or as a last resort after the local chain. Keys stay on this machine.</span>
+      <label className="flex items-center gap-2 font-medium text-ink">
+        <input type="checkbox" checked={status.allow} onChange={(e) => void send({ op: "allow", allow: e.target.checked })} />
+        Allow cloud models
+      </label>
+      {status.providers.map((provider) => (
+        <div key={provider.id} className="flex flex-col gap-1">
+          <span className="font-medium text-ink">
+            {provider.name} <span className="font-normal text-[#9A9A98]">{provider.host}</span>
+            {provider.hasKey ? " · key saved" : " · no key"}
+          </span>
+          <span className="flex flex-wrap items-center gap-1">
+            <input
+              type="password"
+              autoComplete="off"
+              value={drafts[provider.id] ?? ""}
+              placeholder="Paste a key, then save"
+              onChange={(e) => setDrafts((d) => ({ ...d, [provider.id]: e.target.value }))}
+              className="h-7 w-[220px] rounded-full bg-white px-2 text-[12px] outline-none shadow-[0_0_0_1px_#E6E6E3]"
+            />
+            <button
+              type="button"
+              className="rounded-full bg-ink px-2 py-1 text-[12px] text-white"
+              onClick={() => {
+                const key = drafts[provider.id] ?? "";
+                setDrafts((d) => ({ ...d, [provider.id]: "" }));
+                void send({ op: "key", provider: provider.id, key });
+              }}
+            >
+              Save
+            </button>
+            <button
+              type="button"
+              className="rounded-full bg-white px-2 py-1 text-[12px] shadow-[0_0_0_1px_#E6E6E3]"
+              onClick={() =>
+                void send({ op: "test", provider: provider.id }).then((json) => {
+                  if (json.models) setModels((m) => ({ ...m, [provider.id]: json.models as string[] }));
+                  if (json.models) setNote(`${provider.name}: ${json.models.length} models.`);
+                })
+              }
+            >
+              Test
+            </button>
+            <button type="button" className="rounded-full bg-white px-2 py-1 text-[12px] shadow-[0_0_0_1px_#E6E6E3]" onClick={() => void send({ op: "remove", provider: provider.id })}>
+              Remove
+            </button>
+          </span>
+        </div>
+      ))}
+      {ROLE_NAMES.map((role) => {
+        const choice = status.roles?.[role];
+        return (
+          <span key={role} className="flex flex-wrap items-center gap-1">
+            <span className="w-16 text-[#9A9A98]">{LABELS[role]}</span>
+            <select
+              value={choice?.mode ?? "off"}
+              onChange={(e) => {
+                const mode = e.target.value;
+                if (mode === "off") void send({ op: "role", role, mode });
+                else if (choice?.provider && choice.model) void send({ op: "role", role, mode, provider: choice.provider, model: choice.model });
+              }}
+              className="h-7 rounded-full bg-white px-2 text-[12px]"
+            >
+              <option value="off">Local only</option>
+              <option value="prefer">Cloud first</option>
+              <option value="fallback">Cloud if local fails</option>
+            </select>
+            <select
+              value={choice?.provider ?? ""}
+              onChange={(e) => {
+                const provider = e.target.value;
+                if (provider && choice?.model) void send({ op: "role", role, mode: choice?.mode ?? "fallback", provider, model: choice.model });
+              }}
+              className="h-7 rounded-full bg-white px-2 text-[12px]"
+            >
+              <option value="">Provider</option>
+              {status.providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <input
+              defaultValue={choice?.model ?? ""}
+              key={`${role}:${choice?.model ?? ""}`}
+              placeholder="model id"
+              list={`models-${role}`}
+              onBlur={(e) => {
+                const model = e.target.value.trim();
+                const provider = choice?.provider;
+                if (provider && model) void send({ op: "role", role, mode: choice?.mode ?? "fallback", provider, model });
+              }}
+              className="h-7 w-[180px] rounded-full bg-white px-2 text-[12px] outline-none shadow-[0_0_0_1px_#E6E6E3]"
+            />
+            <datalist id={`models-${role}`}>
+              {(choice?.provider ? models[choice.provider] ?? [] : []).map((id) => (
+                <option key={id} value={id} />
+              ))}
+            </datalist>
+          </span>
+        );
+      })}
+      {note && <span>{note}</span>}
+    </div>
+  );
+}
+
+/** Shown above the chat when the latest answer came from a cloud model the owner enabled. */
+export function CloudAnswerBadge() {
+  const [last, setLast] = useState<{ name: string; model: string } | null>(null);
+  useEffect(() => {
+    let stop = false;
+    const load = () =>
+      void fetch("/api/local/cloud")
+        .then((r) => r.json())
+        .then((body: CloudStatus) => {
+          if (!stop) setLast(body.last ?? null);
+        })
+        .catch(() => {});
+    load();
+    const timer = setInterval(load, 4000);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+    };
+  }, []);
+  if (!last) return null;
+  return (
+    <div className="mx-4 mt-2 w-fit rounded-full bg-[#1F1A14] px-2.5 py-1 text-[12px] font-medium text-[#F4E7C3]">
+      Cloud model: {last.name} · {last.model}
     </div>
   );
 }
