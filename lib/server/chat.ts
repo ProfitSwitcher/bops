@@ -528,7 +528,7 @@ const ofApps = (m: Message, apps: ReadonlySet<string>) =>
  * doesn't read texts from strangers at all: there's no tool for them, so "who texted today" is for the
  * user's own turn, which sees them. What fell out of its latest messages comes first, summed up (chat-summary.ts).
  */
-function history(chatId: string, selfId: string | undefined, opts: { unattended?: boolean; noApps?: boolean } = {}) {
+function history(chatId: string, selfId: string | undefined, opts: { unattended?: boolean; noApps?: boolean; thread?: string } = {}) {
   // On a member's turn without apps (TurnOptions.member, not Orgo's team): nothing of the owner's app threads, as
   // their own window has none of it (cloud/ws-slice.ts sharedMessage), so the bot can't read it back to them.
   const apps = opts.noApps ? appThreads() : undefined;
@@ -541,7 +541,7 @@ function history(chatId: string, selfId: string | undefined, opts: { unattended?
   // The computer the bot reading this works on: files added on it are on "your computer's" Desktop, others named.
   const readerHost = filesHostOf(selfId);
   const ownerLast = opts.unattended ? all.findLastIndex(fromOwner) : -1;
-  const said = all.filter((m, i) => heard(m) && !(opts.unattended && fromOutside(m) && i > ownerLast));
+  const said = all.filter((m, i) => heard(m) && !(opts.unattended && fromOutside(m) && i > ownerLast) && (!opts.thread || m.id === opts.thread || m.replyTo === opts.thread));
   const read = windowOf(chatId, said);
   return [
     ...(read.summary ? [{ role: "user" as const, content: soFar(read.summary) }] : []),
@@ -2018,7 +2018,15 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     // Someone's waiting on this reply: the user's own message, in the app, by text or in a channel (not
     // an email, which nobody expects back in seconds, or a turn someone else started). It runs fast.
     const waiting = !!opts.answering && !opts.outside && !opts.emailBack;
-    const base: Config = { model: CHAT_MODEL, effort: CHAT_REASONING.effort };
+    const answeringMessage = opts.answering ? getState().messages.find((m) => m.id === opts.answering && m.chatId === chatId) : undefined;
+    if (answeringMessage && !bg) {
+      const already = getState().messages.some((m) => m.chatId === chatId && m.role === "bot" && m.replyTo === answeringMessage.id);
+      const newer = getState().messages.some((m) => m.chatId === chatId && m.role === "user" && m.id !== answeringMessage.id && m.at > answeringMessage.at && (m.replyTo ?? undefined) === (answeringMessage.replyTo ?? undefined));
+      if (already || newer) return { text: null };
+    }
+    const botEffort = b.effort;
+    const effortFloor = botEffort === "high" ? "high" : CHAT_REASONING.effort;
+    const base: Config = { model: CHAT_MODEL, effort: effortFloor };
     // How much thinking the message needs (routing.ts routeChat: Jev, alongside what's below). Only the user's own.
     const routing = waiting ? routeChat(base, lastWords(chatId), botId).catch(() => ({ config: base })) : Promise.resolve({ config: base });
     // Whether a new bot could have a computer of its own on the user's Orgo plan, so the main bot doesn't promise one.
@@ -2838,7 +2846,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       response = await create([...resumed.outputs.map((o) => ({ type: "function_call_output" as const, call_id: o.callId, output: o.output })), { type: "function_call_output" as const, call_id: resumed.callId, output: out }], resumed.responseId);
     } else
       response = await create([
-        ...history(chatId, botId, { unattended: !!bg, noApps: !!member && !apps }),
+        ...history(chatId, botId, { unattended: !!bg, noApps: !!member && !apps, thread: answeringMessage?.replyTo }),
         { role: "developer" as const, content: `As of now (from Bops, not ${owner}):\n${now.join("\n")}` },
         // A routine's run: the job, last, as a note from Bops.
         ...(bg ? [{ role: "developer" as const, content: jobNote(b, bg, offered.has("draft_reply")) }] : []),
@@ -3180,7 +3188,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
         botId,
         text: reply,
         sessionIds: sessionIds.length ? sessionIds : undefined,
-        replyTo: opts.replyTo,
+        replyTo: answeringMessage ? answeringMessage.replyTo : opts.replyTo,
         // Out of steps mid-work: Go on, as a button, so carrying on is one tap (its words, sent as the person's).
         options: outOfSteps ? [...new Set([...(tidy.options ?? []), "Go on"])] : tidy.options,
         asked: asked.length ? asked : undefined,

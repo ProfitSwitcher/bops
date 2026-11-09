@@ -32,6 +32,10 @@ const { isCloudModel, modelsFromTagsPayload, assertLocalModel, CloudModelError, 
 const { parseConfig, useConfig, loadConfig, localOnly } = await import("../lib/local/mode.ts");
 const { clearHealth, withRole, checkEndpoint } = await import("../lib/local/endpoints.ts");
 const { chat, embed, looseToolCalls } = await import("../lib/local/provider.ts");
+const { localScreens, screensAdvanced } = await import("../lib/local/orgo-adapter.ts");
+const { localComputerTurn } = await import("../lib/local/computer-session.ts");
+const { transcribeLocal } = await import("../lib/local/speech.ts");
+const { deleteSession, listFacts } = await import("../lib/local/memory-store.ts");
 const { runResponses, resetResponsesForTests } = await import("../lib/local/responses.ts");
 const { runComputerUseLoop } = await import("../lib/local/computer-use.ts");
 const { addFacts, searchFacts, closeMemoryForTests, memoryDb } = await import("../lib/local/memory-store.ts");
@@ -426,6 +430,115 @@ await check("mac keys are key codes, and move and scroll post core graphics even
   const scroll = macPointerScript("/scroll", { x: 3, y: 4, scroll_y: 120, scroll_x: -40 });
   assert.match(scroll, /CGEventCreateMouseEvent/);
   assert.match(scroll, /CGEventCreateScrollWheelEvent\(src, 0, 2, -120, -40\)/);
+});
+
+await check("structured calls send a schema and fences are stripped", async () => {
+  clearHealth();
+  resetResponsesForTests();
+  const schemas = [];
+  const model = await listen(async (req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "ornith-1.5:122b" }] });
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    schemas.push(body.format);
+    json(res, { message: { content: '```json\n{"name":"Wire a lamp"}\n```' } });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "studio3", baseUrl: `${model.url}/v1`, provider: "ollama" }],
+      roles: { planner: { chain: [{ endpoint: "studio3", model: "ornith-1.5:122b" }] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [] } },
+    },
+    workers: [],
+  });
+  const skill = { type: "object", properties: { name: { type: "string" } }, required: ["name"] };
+  const out = await runResponses({ input: "save this chat as a skill", text: { format: { type: "json_schema", name: "skill_draft", schema: skill, strict: true } } });
+  assert.deepEqual(schemas[0], skill);
+  assert.equal(out.output_text, '{"name":"Wire a lamp"}');
+  schemas.length = 0;
+  await runResponses({ input: "route", text: { format: { type: "json_object" } } });
+  assert.deepEqual(schemas[0], { type: "object" });
+  model.server.close();
+});
+
+await check("planner chats ask Ollama to keep the model loaded", async () => {
+  clearHealth();
+  let keep;
+  const model = await listen(async (req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "ornith-1.5:122b" }] });
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    keep = JSON.parse(Buffer.concat(chunks).toString() || "{}").keep_alive;
+    json(res, { choices: [{ message: { content: "ok" } }] });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "studio3", baseUrl: `${model.url}/v1`, provider: "ollama" }],
+      roles: { planner: { chain: [{ endpoint: "studio3", model: "ornith-1.5:122b" }] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [] } },
+    },
+    workers: [],
+  });
+  await chat({ role: "planner", messages: [{ role: "user", content: "hi" }] });
+  assert.equal(keep, "24h");
+  model.server.close();
+});
+
+await check("local screens name their displays, and a stuck screen list stops", async () => {
+  const screens = localScreens();
+  assert.ok(screens.some((s) => s.display === ":100" && s.vnc_port && s.ws_port));
+  assert.equal(screens.length >= 4, true);
+  assert.equal(screensAdvanced([{ display: ":100" }], [{ display: ":100" }], 101), "stuck");
+  assert.equal(screensAdvanced([], [{ display: ":100" }], 100), "ready");
+  assert.equal(screensAdvanced([{ display: ":100" }], [{ display: ":100" }, { display: ":101" }], 102), "grew");
+});
+
+await check("a local computer task talks to the worker, not an agents API", async () => {
+  clearHealth();
+  const seen = [];
+  const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "" });
+  const vision = await listen(async (req, res) => {
+    seen.push(req.url);
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "qwen3.8:27b-q8_0" }] });
+    json(res, { choices: [{ message: { content: "Done.", tool_calls: [{ id: "c", type: "function", function: { name: "computer", arguments: JSON.stringify({ done: true, actions: [] }) } }] } }] });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "v", baseUrl: `${vision.url}/v1`, provider: "ollama" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [{ endpoint: "v", model: "qwen3.8:27b-q8_0" }] }, embed: { chain: [] }, heavy: { chain: [] } },
+    },
+    workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
+  });
+  const text = await localComputerTurn("task-1", "take a screenshot");
+  assert.match(text, /Done/);
+  assert.equal(seen.some((u) => String(u).includes("agents")), false);
+  vision.server.close();
+  worker.server.close();
+});
+
+await check("local speech uses the configured server and never a cloud host", async () => {
+  const heard = [];
+  const speech = await listen(async (req, res) => {
+    heard.push(req.url);
+    json(res, { text: "turn on the lamp" });
+  });
+  process.env.BOPS_LLM_TRANSCRIBE_URL = speech.url;
+  delete process.env.BOPS_WHISPER_BIN;
+  const text = await transcribeLocal(Buffer.from("audio"));
+  assert.equal(text, "turn on the lamp");
+  delete process.env.BOPS_LLM_TRANSCRIBE_URL;
+  await assert.rejects(transcribeLocal(Buffer.from("audio")), /not sent to a cloud/);
+  speech.server.close();
+});
+
+await check("deleting a bot session removes its local memory", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "bops-mem-"));
+  process.env.BOPS_MEMORY_PATH = join(dir, "memory.sqlite");
+  closeMemoryForTests();
+  await addFacts("bops", [{ content: "The code is TEAL-42.", sessionId: "bops-chat-bot-z" }]);
+  deleteSession("bops", "bops-chat-bot-z");
+  assert.equal(listFacts("bops").some((f) => f.sessionId === "bops-chat-bot-z"), false);
+  rmSync(dir, { recursive: true, force: true });
+  closeMemoryForTests();
 });
 
 await check("egress tripwire refuses public hosts and still allows loopback", async () => {

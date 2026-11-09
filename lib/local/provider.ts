@@ -34,11 +34,20 @@ function chatTimeout(attempt: Attempt): number {
   return attempt.endpoint.provider === "exo" ? exoLoadTimeoutMs() : CHAT_MS;
 }
 
+/** How long Ollama keeps a model loaded. Planner and fast stay up so a chat does not reload a 74 GB model. */
+export function ollamaKeepAlive(role: Role): string {
+  const all = process.env.BOPS_OLLAMA_KEEP_ALIVE?.trim();
+  if (all) return all;
+  if (role === "planner" || role === "fast") return "24h";
+  return "30m";
+}
+
 export async function chat(opts: {
   role: Role;
   messages: ChatMessage[];
   tools?: ToolDef[];
   preferModel?: string;
+  jsonSchema?: Record<string, unknown>;
   fetchImpl?: typeof fetch;
 }): Promise<ChatResult> {
   if (opts.preferModel) assertLocalModel(opts.preferModel);
@@ -55,7 +64,7 @@ export async function chat(opts: {
   try {
     const { value, attempt, skipped } = await withRole(
       opts.role,
-      async (attempt) => complete(attempt, opts.messages, opts.tools ?? [], hasImage, opts.fetchImpl),
+      async (attempt) => complete(attempt, opts.messages, opts.tools ?? [], hasImage, opts.fetchImpl, { jsonSchema: opts.jsonSchema, keepAlive: ollamaKeepAlive(opts.role) }),
       { preferModel: opts.preferModel, fetchImpl: opts.fetchImpl },
     );
     noteLocalAnswer();
@@ -72,13 +81,19 @@ export async function chat(opts: {
   }
 }
 
-async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], hasImage: boolean, fetchImpl: typeof fetch = fetch): Promise<Omit<ChatResult, "model" | "endpoint">> {
+async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], hasImage: boolean, fetchImpl: typeof fetch = fetch, extra: { jsonSchema?: Record<string, unknown>; keepAlive?: string } = {}): Promise<Omit<ChatResult, "model" | "endpoint">> {
   assertLocalModel(attempt.model);
   if (attempt.endpoint.provider === "exo") await assertExoReady(attempt, fetchImpl);
   const headers = { "Content-Type": "application/json", ...authHeaders(attempt.endpoint) };
   const base = attempt.endpoint.baseUrl.replace(/\/+$/, "");
   const body: Record<string, unknown> = { model: attempt.model, messages, temperature: 0.2 };
   if (tools.length) body.tools = tools;
+  if (extra.keepAlive && attempt.endpoint.provider === "ollama") body.keep_alive = extra.keepAlive;
+  if (extra.jsonSchema) body.response_format = { type: "json_schema", json_schema: { name: "result", schema: extra.jsonSchema, strict: true } };
+  if (extra.jsonSchema && attempt.endpoint.provider === "ollama") {
+    const native = await nativeChat(attempt, messages, tools, headers, fetchImpl, extra.keepAlive, extra.jsonSchema);
+    return fromOpenAI(native);
+  }
   const timeout = chatTimeout(attempt);
   const exo = attempt.endpoint.provider === "exo";
   if (exo) beginExoWarmup(attempt.endpoint.id, attempt.model);
@@ -100,7 +115,7 @@ async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDe
   }
   let payload: unknown;
   if ((res.status === 404 || res.status === 405) && !exo) {
-    payload = await nativeChat(attempt, messages, tools, headers, fetchImpl);
+    payload = await nativeChat(attempt, messages, tools, headers, fetchImpl, extra.keepAlive, extra.jsonSchema);
   } else if (!res.ok) {
     const text = (await res.text()).slice(0, 500);
     if (res.status === 404 || /not found|unknown model|does not exist/i.test(text)) throw new Error(text);
@@ -130,11 +145,13 @@ async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDe
   return parsed;
 }
 
-async function nativeChat(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], headers: Record<string, string>, fetchImpl: typeof fetch) {
+async function nativeChat(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], headers: Record<string, string>, fetchImpl: typeof fetch, extraKeep?: string, extraFormat?: Record<string, unknown>) {
   const origin = originOf(attempt.endpoint.baseUrl);
   const nativeMessages = messages.map(toNative);
   const body: Record<string, unknown> = { model: attempt.model, messages: nativeMessages, stream: false };
   if (tools.length) body.tools = tools.map((t) => ({ type: "function", function: t.function }));
+  if (extraKeep) body.keep_alive = extraKeep;
+  if (extraFormat) body.format = extraFormat;
   const res = await fetchImpl(`${origin}/api/chat`, {
     method: "POST",
     headers,

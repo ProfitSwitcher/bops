@@ -28,6 +28,7 @@ import { Fold } from "./fold";
 import { DefaultPill, NewThread, useBotKeys, useDismiss } from "./new-thread";
 import { undash } from "./side-group";
 import { post } from "./ui";
+import { useLocalOnly } from "./local-mode";
 import { plainTitle } from "@/lib/plain-words";
 
 /**
@@ -111,7 +112,9 @@ function threadsNow(state: AppState, b: Bot) {
 
 /** One agent of the profile as a tile: its mark, name and how it is, the Default marked whatever its state. `on`: its editor is open. */
 export function AgentTile({ agent: x, bot: b, state, isDefault, on, keys, onClick }: { agent: BotAgent; bot: Bot; state: AppState; isDefault: boolean; on?: boolean; keys?: ReadonlySet<string>; onClick?: () => void }) {
+  const local = useLocalOnly();
   const st = agentState(x, b, state, keys);
+  const line = local && x.kind === "bops" ? "Local models" : st.line;
   const soon = !!st.soon;
   const at = { bot: b, state };
   return (
@@ -130,7 +133,7 @@ export function AgentTile({ agent: x, bot: b, state, isDefault, on, keys, onClic
           {soon && <span className="shrink-0 rounded-full bg-[#F2F2F0] px-1.5 text-[10.5px] font-normal leading-[14px] text-[#6B6B6B]">Soon</span>}
           {isDefault && <DefaultPill />}
         </span>
-        <span className={`truncate text-[11.5px] leading-[15px] ${!st.ready && !soon && st.button ? "text-[#B54708]" : "text-[#6B6B6B]"}`}>{st.line}</span>
+        <span className={`truncate text-[11.5px] leading-[15px] ${!st.ready && !soon && st.button ? "text-[#B54708]" : "text-[#6B6B6B]"}`}>{line}</span>
       </span>
     </button>
   );
@@ -539,6 +542,7 @@ export function BotAiSection({
   const [newThread, setNewThread] = useState(newThreadAt);
   const [error, setError] = useState<string | null>(null);
   const [termBusy, setTermBusy] = useState(false);
+  const local = useLocalOnly();
   const keys = useBotKeys(state, b);
   const ai = aiOf(b, state);
   const ro = !!state.shared;
@@ -642,14 +646,14 @@ export function BotAiSection({
               </button>
             )}
           </div>
-          <div className={`${glassRow} rounded-[12px] bg-white px-3 py-2 shadow-[0_0_0_1px_#E6E6E3]`} title="Calls and texts by voice use OpenAI live voice for now.">
+          <div className={`${glassRow} rounded-[12px] bg-white px-3 py-2 shadow-[0_0_0_1px_#E6E6E3]`} title={local ? "Calls use this Mac. OpenAI live voice is not used." : "Calls and texts by voice use OpenAI live voice for now."}>
             <span className="flex-1 text-[13px] leading-4">Calls</span>
-            {BRAINS_ON ? <OpenAiMark size={14} /> : null}
-            <span className="text-[13px] font-medium leading-4">OpenAI live voice</span>
+            {BRAINS_ON && !local ? <OpenAiMark size={14} /> : null}
+            <span className="text-[13px] font-medium leading-4">{local ? "Local voice" : "OpenAI live voice"}</span>
           </div>
           {shared && <SharedWarning bot={b} words={shared} ro={ro || workBot(b, state.bots).id === b.id} />}
           <span className={quiet}>
-            {BRAINS_ON ? `Each thread runs on the agent you pick, with ${b.name}'s own accounts. Chat, memory and calls stay on credit.` : "Chat, threads, memory and calls run on credit."}
+            {local ? "Chat, threads, and memory use the models in bops.local.json." : BRAINS_ON ? `Each thread runs on the agent you pick, with ${b.name}'s own accounts. Chat, memory and calls stay on credit.` : "Chat, threads, memory and calls run on credit."}
             {BRAINS_ON && where === "some" ? " Threads on your Mac use Bops agent." : ""}
           </span>
           {ro && (

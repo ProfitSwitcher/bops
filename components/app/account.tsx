@@ -37,6 +37,7 @@ import { YourComputer } from "./computer-size";
 import { Mascot, Spinner } from "./mascot";
 import { signOutOfOrgo as signOutAsking, UNSENT } from "./sign-in";
 import { AskInPlace, refreshState } from "./ui";
+import { useLocalOnly } from "./local-mode";
 
 /*
  * The account: who you are on Orgo, what you pay for Bops and the credit left when Orgo says, what your
@@ -132,6 +133,7 @@ export function useAccountInfo() {
 /** Settings, Account, Plan and credit: your Bops plan and credit, and your bots' inboxes and numbers. */
 export function PlanAndCredit({ state }: { state: AppState }) {
   const { info, loading, failed, setBops } = useAccountInfo();
+  const local = useLocalOnly();
   const user = info?.user ?? state.account?.user ?? null;
   return (
     <>
@@ -142,7 +144,7 @@ export function PlanAndCredit({ state }: { state: AppState }) {
           <Placeholder title="Your plan" />
         )
       ) : (
-        <Notice>Sign in with Orgo to see your plan.</Notice>
+        <Notice>{local ? "Plans and Orgo credit are off. This Bops runs on your machines." : "Sign in with Orgo to see your plan."}</Notice>
       )}
       {info && <Reach info={info} />}
     </>

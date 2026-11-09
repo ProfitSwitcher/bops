@@ -42,7 +42,7 @@ export const keyId = (k: Pick<KeyRow, "scope" | "name">) => `${k.scope}:${k.name
  * `shared`: in a workspace shared with the user, whether they have Keys there and whether the owner's Bops takes their
  * bots' switches (`acts`). `notice`: orgo-web couldn't list This workspace's keys just now (the owner's still show).
  */
-type KeysInfo = { signedIn: boolean; keys: KeyRow[]; providers: Provider[]; workspaceKeys?: boolean; error?: string; shared?: { keys: boolean; acts: boolean }; notice?: string };
+type KeysInfo = { signedIn: boolean; keys: KeyRow[]; providers: Provider[]; workspaceKeys?: boolean; error?: string; shared?: { keys: boolean; acts: boolean }; notice?: string; local?: boolean };
 
 /** The two scopes, as Orgo's Secrets names them. */
 const SCOPES: { id: Scope; label: string; tip: string }[] = [
@@ -375,6 +375,7 @@ export function KeysSettings({
     ) : (
       <span className="text-[12.5px] leading-[18px] text-[#6B6B6B]">Checking</span>
     );
+  else if (info.local) body = <span className="text-[12.5px] leading-[18px] text-[#6B6B6B]">Keys stay in bops.local.json on this Mac. Orgo's vault is not used.</span>;
   else if (!info.signedIn) body = <span className="text-[12.5px] leading-[18px] text-[#6B6B6B]">{undash(info.error ?? "Sign in to Orgo to use Keys.")}</span>;
   else if (!holds) body = <span data-no-keys className="text-[12.5px] leading-[18px] text-[#6B6B6B]">{NO_KEYS_LINE}</span>;
   else if (!shown.length && !form)
@@ -960,6 +961,7 @@ export function KeyAskCard({
     ) : (
       <span className={line}>Checking</span>
     );
+  else if (info.local) body = <span className={line}>Keys stay in bops.local.json on this Mac. Orgo's vault is not used.</span>;
   else if (!info.signedIn) body = <span className={line}>{undash(info.error ?? "Sign in to Orgo to use Keys.")}</span>;
   else if (!p) body = <span className={line}>Bops can&apos;t call that service yet.</span>;
   else if (!mine) body = <span data-who-answers className={line}>{NO_KEYS_LINE}</span>;
@@ -1096,7 +1098,7 @@ function BotKeysCard({ state, bot: b, onAdd, className }: BotKeysProps) {
         )}
       </div>
       {!info.signedIn || !keys.length ? (
-        <div className="px-4 pb-3 pt-0.5 text-[12px] leading-4 text-[#6B6B6B]">{info.signedIn ? (state.shared ? "No keys for this workspace yet" : "No keys in your Orgo vault yet") : undash(info.error ?? "Sign in to Orgo to use Keys.")}</div>
+        <div className="px-4 pb-3 pt-0.5 text-[12px] leading-4 text-[#6B6B6B]">{info.local ? "Model tokens stay in bops.local.json." : info.signedIn ? (state.shared ? "No keys for this workspace yet" : "No keys in your Orgo vault yet") : undash(info.error ?? "Sign in to Orgo to use Keys.")}</div>
       ) : (
         keys.map((k, i) => {
           const on = !!b.keys?.includes(k.name);

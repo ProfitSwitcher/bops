@@ -27,6 +27,7 @@ export type ResponseBody = {
   stream?: boolean;
   max_output_tokens?: number;
   reasoning?: { effort?: string };
+  text?: { format?: { type?: string; name?: string; schema?: Record<string, unknown>; strict?: boolean } };
 };
 
 /** True only when the newest user message itself carries an image. An earlier picture does not. */
@@ -93,12 +94,26 @@ export function focusLatestImage(messages: ChatMessage[]): ChatMessage[] {
   ];
 }
 
+export function stripJsonFence(text: string): string {
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  return (fenced ? fenced[1] : text).trim();
+}
+
+function schemaOf(body: ResponseBody): Record<string, unknown> | undefined {
+  const format = body.text?.format;
+  if (!format) return undefined;
+  if (format.type === "json_schema" && format.schema && typeof format.schema === "object") return format.schema;
+  if (format.type === "json_object") return { type: "object" };
+  return undefined;
+}
+
 export async function runResponses(body: ResponseBody, fetchImpl?: typeof fetch) {
   const role = roleFor(body);
   const prefer = body.model && !isCloudModel(body.model) && !/^gpt-|^(o1|o3|o4)/.test(body.model) ? body.model : undefined;
   let messages = focusLatestImage(restore(body));
   const tools = toTools(body.tools ?? []);
-  let result = await chat({ role, messages, tools, preferModel: prefer, fetchImpl });
+  const jsonSchema = schemaOf(body);
+  let result = await chat({ role, messages, tools, preferModel: prefer, jsonSchema, fetchImpl });
   let guard = 0;
   while (guard++ < 2 && result.toolCalls.length && result.toolCalls.every((c) => c.name === "web_search")) {
     messages = [
@@ -106,7 +121,7 @@ export async function runResponses(body: ResponseBody, fetchImpl?: typeof fetch)
       { role: "assistant", content: result.content || null, tool_calls: result.toolCalls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.arguments } })) },
       ...result.toolCalls.map((c) => ({ role: "tool" as const, tool_call_id: c.id, content: "Web search is unavailable offline. Say so, and answer from what you already know." })),
     ];
-    result = await chat({ role, messages, tools, preferModel: result.model, fetchImpl });
+    result = await chat({ role, messages, tools, preferModel: result.model, jsonSchema, fetchImpl });
   }
   const id = `resp_${randomUUID()}`;
   const output = toOutput(result);
@@ -132,13 +147,17 @@ export async function runResponses(body: ResponseBody, fetchImpl?: typeof fetch)
     })
     .join("\n")
     .trim();
+  const clean = stripJsonFence(text);
   return {
     id,
     object: "response",
     model: result.model,
     status: "completed",
-    output,
-    output_text: text,
+    output: output.map((item) => {
+      if (item.type !== "message" || !Array.isArray(item.content)) return item;
+      return { ...item, content: item.content.map((part) => (part && typeof part === "object" && "text" in part ? { ...part, text: stripJsonFence(String(part.text ?? "")) } : part)) };
+    }),
+    output_text: clean,
     usage: {
       input_tokens: result.usage?.prompt_tokens ?? 0,
       output_tokens: result.usage?.completion_tokens ?? 0,

@@ -33,7 +33,7 @@ import { OpenBotComputer } from "./app-envs";
 import { WorkspaceDomains } from "./workspace-domains";
 import { ChatSwitch } from "./chat-switch";
 import { BotSettingsPage } from "./bot-settings";
-import { CloudAnswerBadge, LocalModeNotice } from "./local-mode";
+import { CloudAnswerBadge, LocalModeNotice, useLocalOnly } from "./local-mode";
 import type { SettingsSection } from "@/lib/bot-settings";
 
 /** Your Mac's tab, and the chat's bot's profile (it follows the chat, like the computer tab); both open on demand. */
@@ -2088,6 +2088,7 @@ export function Settings({
   const adminHere = state.shared?.role === "admin";
   const fits = (p?: SettingsPane) => !!p && (p !== "domains" || domains) && (p !== "apps" || apps) && (!state.shared || ((p !== "team" || adminHere) && (p !== "chart" || mayChange(state, "chart", { soon: true })) && p !== "email"));
   const [pane, setPane] = useState<SettingsPane>(fits(at) ? at! : "profile");
+  const local = useLocalOnly();
   const [was, setWas] = useState(`${at}:${atAt}`);
   if (was !== `${at}:${atAt}`) {
     setWas(`${at}:${atAt}`);
@@ -2296,7 +2297,7 @@ export function Settings({
           <span className="flex size-[34px] shrink-0 items-center justify-center rounded-full bg-ink text-[12.5px] font-semibold tracking-[0.02em] text-white">{initialsOf(state)}</span>
           <span className="flex min-w-0 flex-col">
             <span className="truncate text-[13.5px] font-semibold leading-[18px]">{who}</span>
-            <span className="truncate text-[11.5px] leading-4 text-[#8A8A88]">{user?.email ?? "Not signed in"}</span>
+            <span className="truncate text-[11.5px] leading-4 text-[#8A8A88]">{user?.email ?? (local ? "On this Mac" : "Not signed in")}</span>
           </span>
         </div>
         {group("Account", account)}
@@ -2304,7 +2305,7 @@ export function Settings({
         {team_.length > 0 && group("Orgo team only", team_)}
       </nav>
       <main data-settings-pane={pane} className={`flex min-h-0 min-w-0 flex-1 flex-col ${framed ? "" : "overflow-y-auto pb-8"}`}>
-        <LocalModeNotice />
+        {pane === "mac" && <LocalModeNotice />}
         {body}
       </main>
     </div>

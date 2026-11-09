@@ -150,6 +150,7 @@ export function ensureSession(bank: string, id: string) {
 export function deleteSession(bank: string, id: string) {
   const database = memoryDb();
   database.prepare("DELETE FROM messages WHERE bank = ? AND session_id = ?").run(bank, id);
+  database.prepare("DELETE FROM facts WHERE bank = ? AND session_id = ?").run(bank, id);
   database.prepare("DELETE FROM sessions WHERE bank = ? AND id = ?").run(bank, id);
 }
 

@@ -6,6 +6,7 @@ import { Spinner } from "./mascot";
 import { useMacApp } from "./mac-screens";
 import { RestartAsk } from "./restart";
 import { post } from "./ui";
+import { useLocalOnly } from "./local-mode";
 import { UpdateSettings } from "./update-notice";
 
 /*
@@ -263,8 +264,9 @@ function PermissionCard({ id, items }: { id: "screen" | "microphone" | "notifica
   const [restarting, setRestarting] = useState(false);
   const s = perms.status?.[id];
   const copy = COPY[id];
+  const local = useLocalOnly();
   if (!perms.inApp)
-    return <Card icon={ICONS[id]} title={copy.title} line={copy.line} tone="none" status="Needs the Bops app for Mac" />;
+    return <Card icon={ICONS[id]} title={copy.title} line={local ? "The local worker on this Mac takes screenshots and clicks." : copy.line} tone="none" status={local ? "Uses the local worker" : "Needs the Bops app for Mac"} />;
   if (!s) return <Card icon={ICONS[id]} title={copy.title} line={copy.line} tone="none" status="Checking" />;
   // Screen Recording turned on while Bops was open: macOS applies it on the next launch.
   const restart = id === "screen" && (perms.restart || (s !== "granted" && sentToSettings.has("screen")));

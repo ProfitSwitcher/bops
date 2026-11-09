@@ -71,10 +71,31 @@ type CloudStatus = {
 
 const ROLE_NAMES = ["heavy", "planner", "fast", "vision", "embed"] as const;
 
+type RoleDraft = { mode: string; provider: string; model: string };
+
+/** Whether this server is local-only. Cached so settings and tabs don't each wait. */
+export function useLocalOnly() {
+  const [on, setOn] = useState(false);
+  useEffect(() => {
+    let stop = false;
+    void fetch("/api/local")
+      .then((r) => r.json())
+      .then((body: { localOnly?: boolean }) => {
+        if (!stop) setOn(!!body.localOnly);
+      })
+      .catch(() => {});
+    return () => {
+      stop = true;
+    };
+  }, []);
+  return on;
+}
+
 /** Optional keys. They stay on this machine and are sent only to that provider. */
 function CloudModels() {
   const [status, setStatus] = useState<CloudStatus | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [roleDraft, setRoleDraft] = useState<Record<string, RoleDraft>>({});
   const [note, setNote] = useState<string | null>(null);
   const [models, setModels] = useState<Record<string, string[]>>({});
   const load = () =>
@@ -150,31 +171,24 @@ function CloudModels() {
         </div>
       ))}
       {ROLE_NAMES.map((role) => {
-        const choice = status.roles?.[role];
+        const saved = status.roles?.[role];
+        const draft = roleDraft[role] ?? { mode: saved?.mode ?? "off", provider: saved?.provider ?? "", model: saved?.model ?? "" };
+        const setDraft = (patch: Partial<RoleDraft>) => {
+          const next = { ...draft, ...patch };
+          setRoleDraft((d) => ({ ...d, [role]: next }));
+          if (next.mode === "off") void send({ op: "role", role, mode: "off" });
+          else if (next.provider && next.model.trim()) void send({ op: "role", role, mode: next.mode, provider: next.provider, model: next.model.trim() });
+          else setNote("Pick a provider and a model.");
+        };
         return (
           <span key={role} className="flex flex-wrap items-center gap-1">
             <span className="w-16 text-[#9A9A98]">{LABELS[role]}</span>
-            <select
-              value={choice?.mode ?? "off"}
-              onChange={(e) => {
-                const mode = e.target.value;
-                if (mode === "off") void send({ op: "role", role, mode });
-                else if (choice?.provider && choice.model) void send({ op: "role", role, mode, provider: choice.provider, model: choice.model });
-              }}
-              className="h-7 rounded-full bg-white px-2 text-[12px]"
-            >
+            <select value={draft.mode} onChange={(e) => setDraft({ mode: e.target.value })} className="h-7 rounded-full bg-white px-2 text-[12px]">
               <option value="off">Local only</option>
               <option value="prefer">Cloud first</option>
               <option value="fallback">Cloud if local fails</option>
             </select>
-            <select
-              value={choice?.provider ?? ""}
-              onChange={(e) => {
-                const provider = e.target.value;
-                if (provider && choice?.model) void send({ op: "role", role, mode: choice?.mode ?? "fallback", provider, model: choice.model });
-              }}
-              className="h-7 rounded-full bg-white px-2 text-[12px]"
-            >
+            <select value={draft.provider} onChange={(e) => setDraft({ provider: e.target.value })} className="h-7 rounded-full bg-white px-2 text-[12px]">
               <option value="">Provider</option>
               {status.providers.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -183,19 +197,15 @@ function CloudModels() {
               ))}
             </select>
             <input
-              defaultValue={choice?.model ?? ""}
-              key={`${role}:${choice?.model ?? ""}`}
+              value={draft.model}
               placeholder="model id"
               list={`models-${role}`}
-              onBlur={(e) => {
-                const model = e.target.value.trim();
-                const provider = choice?.provider;
-                if (provider && model) void send({ op: "role", role, mode: choice?.mode ?? "fallback", provider, model });
-              }}
+              onChange={(e) => setRoleDraft((d) => ({ ...d, [role]: { ...draft, model: e.target.value } }))}
+              onBlur={(e) => setDraft({ model: e.target.value })}
               className="h-7 w-[180px] rounded-full bg-white px-2 text-[12px] outline-none shadow-[0_0_0_1px_#E6E6E3]"
             />
             <datalist id={`models-${role}`}>
-              {(choice?.provider ? models[choice.provider] ?? [] : []).map((id) => (
+              {(draft.provider ? models[draft.provider] ?? [] : []).map((id) => (
                 <option key={id} value={id} />
               ))}
             </datalist>

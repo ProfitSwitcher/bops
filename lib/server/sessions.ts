@@ -1910,15 +1910,20 @@ async function ensureScreen(computerId: string, display: number) {
       await orgo.bash(computerId, "true", 30);
       screens = await orgo.screens(computerId);
     }
-    while (!screens.some((x) => x.display === `:${display}`) && screens.length < MAX_SCREENS) {
+    let spins = 0;
+    while (!screens.some((x) => x.display === `:${display}`) && screens.length < MAX_SCREENS && spins < MAX_SCREENS) {
+      const before = screens.length;
       await orgo.createScreen(computerId);
       screens = await orgo.screens(computerId);
+      spins += 1;
+      if (screens.length <= before) break;
     }
     if (!screens.some((x) => x.display === `:${display}`)) throw new Error(`screen :${display} unavailable`);
   }
   // The screen's Chrome is there when its DevTools port answers (what the bots drive it by): a window
   // alone can be one Orgo opened itself (it does after a proxy change), which the bots can't drive.
-  await orgo.bash(computerId, `curl -s --max-time 2 -o /dev/null http://127.0.0.1:${9200 + display}/json/version || bops-chrome ${display}`, 30);
+  // Local mode uses the native worker, which has no DevTools port to wait on.
+  if (!(await import("@/lib/local/mode")).localOnly()) await orgo.bash(computerId, `curl -s --max-time 2 -o /dev/null http://127.0.0.1:${9200 + display}/json/version || bops-chrome ${display}`, 30);
 }
 
 /** Add a step to a thread's record (also used by the vault when it signs a thread's bot in). */
@@ -3159,6 +3164,9 @@ async function run(sessionId: string) {
       const onTool = await computerToolTurns(sessionId, { computerId, display, sharedWith: c.id !== b.id ? c.name : undefined, resuming, model: bopsModel });
       turn = onTool;
       compact = async () => void (await onTool(undefined, undefined, true));
+    } else if ((await import("@/lib/local/mode")).localOnly()) {
+      const { localComputerTurn } = await import("@/lib/local/computer-session");
+      turn = (input) => localComputerTurn(sessionId, input ?? session(sessionId)?.goal ?? "");
     } else {
       if (!resuming) {
         const route = s.route ?? (await routeTask(b.effort, s.goal, b.id, { model: bopsModel }));

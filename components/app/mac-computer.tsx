@@ -9,6 +9,7 @@ import { WatchBadge, WatchEye, WatchOverlay, type Spot } from "./watch-overlay";
 import { Mascot } from "./mascot";
 import { botBezel, post } from "./ui";
 import { plainTitle } from "@/lib/plain-words";
+import { useLocalOnly } from "./local-mode";
 
 /**
  * Your Mac, shown like a bot's computer (computer.tsx): one big live screen in a frame, a row of
@@ -73,6 +74,7 @@ export function MacComputer(props: MacComputerProps) {
 
 function MacComputerView({ state, mode, onFocus, onBack, onOpenThread, showThread, hidden = false }: MacComputerProps) {
   const inApp = useMacApp();
+  const local = useLocalOnly();
   const screens = useMacScreens();
   // A tile you picked, and when: it stays until a new task starts on the Mac (then the view follows that).
   const [pin, setPin] = useState<{ key: string; at: number } | null>(null);
@@ -278,7 +280,7 @@ function MacComputerView({ state, mode, onFocus, onBack, onOpenThread, showThrea
   // The bar under the screen shows only when something's going on: a task, news, or you driving.
   const showBar = yours || !!grid.length || !!current?.watch?.alert || !!current?.session || working.length > 0;
   // Before there's anything to stream: not in the app, no permission yet, or still looking.
-  const blocked = current?.kind === "browser" ? null : !inApp ? "app" : !screens ? "loading" : !granted ? "permission" : !current ? "nothing" : null;
+  const blocked = current?.kind === "browser" ? null : !inApp && !local ? "app" : local && !inApp ? "worker" : !screens ? "loading" : !granted && !local ? "permission" : !current ? "nothing" : null;
 
   return (
     <div className={`relative flex min-h-0 flex-1 flex-col gap-3 ${mode === "focus" ? "px-5 pb-4 pt-3.5" : ""}`} style={mode === "panel" ? { containerType: "size", justifyContent: "center" } : undefined}>
@@ -566,10 +568,12 @@ function WhoPill({ item: i }: { item: Item }) {
   );
 }
 
-function Blocked({ why }: { why: "app" | "loading" | "permission" | "nothing" }) {
+function Blocked({ why }: { why: "app" | "worker" | "loading" | "permission" | "nothing" }) {
   if (why === "loading") return <div className="h-full w-full animate-pulse" />;
   const [title, body] =
-    why === "app"
+    why === "worker"
+      ? ["This Mac uses the local worker", "Screenshots and clicks go through the worker on this machine (127.0.0.1:8791). The Bops desktop app is not required."]
+      : why === "app"
       ? ["Open the Bops app to watch your Mac", "A browser tab can't see your screen. In the Bops app, your displays and the windows bots use show here live."]
       : why === "permission"
         ? ["Let Bops see your screen", "macOS asks once: turn on Bops under Screen Recording, then quit and reopen Bops."]

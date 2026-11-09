@@ -9,6 +9,39 @@ type Worker = { id: string; url: string; token?: string };
 
 const sessions = new Map<string, { worker: string; remote: string; name: string }>();
 
+/** The four displays a Bops computer is expected to have. Matches lib/types DISPLAYS. */
+const LOCAL_DISPLAYS = [100, 101, 102, 99];
+
+export type LocalScreen = { id: string; display: string; width: number; height: number; vnc_port: number; ws_port: number };
+
+const extraScreens: LocalScreen[] = [];
+
+export function localScreens(): LocalScreen[] {
+  return [
+    ...LOCAL_DISPLAYS.map((display, i) => ({ id: `s${display}`, display: `:${display}`, width: 1280, height: 960, vnc_port: 5900 + i, ws_port: 6080 + i })),
+    ...extraScreens,
+  ];
+}
+
+function addLocalScreen(): LocalScreen {
+  const n = 103 + extraScreens.length;
+  const screen = { id: `s${n}`, display: `:${n}`, width: 1280, height: 960, vnc_port: 5910 + extraScreens.length, ws_port: 6090 + extraScreens.length };
+  extraScreens.push(screen);
+  return screen;
+}
+
+export function resetLocalComputersForTests() {
+  extraScreens.length = 0;
+  sessions.clear();
+}
+
+/** Whether another createScreen call grew the list. A list that stays the same must stop the loop. */
+export function screensAdvanced<T extends { display?: string }>(before: readonly T[], after: readonly T[], display: number): "ready" | "grew" | "stuck" {
+  if (after.some((s) => s.display === `:${display}`)) return "ready";
+  if (after.length <= before.length) return "stuck";
+  return "grew";
+}
+
 export function localComputersOn() {
   return localOnly() && process.env.BOPS_COMPUTER_BACKEND !== "orgo";
 }
@@ -66,8 +99,8 @@ export async function localOrgoCall<T>(method: string, path: string, body?: unkn
   const rest = computer[2] || "";
   if (method === "GET" && rest === "") return computerInfo(id) as T;
   if (method === "DELETE" && rest === "") return removeComputer(id) as T;
-  if (method === "GET" && rest === "/screens") return { screens: [{ id: "default", width: 1280, height: 960 }] } as T;
-  if (method === "POST" && rest === "/screens") return { id: "default", width: 1280, height: 960 } as T;
+  if (method === "GET" && rest === "/screens") return { screens: localScreens() } as T;
+  if (method === "POST" && rest === "/screens") return addLocalScreen() as T;
   if (method === "GET" && rest === "/resize") return { current_disk_gb: 80, max_disk_gb: 80 } as T;
   if (method === "POST" && rest === "/resume") return { waking: false } as T;
   if (method === "POST" && (rest === "/restart" || rest === "/webrtc")) return { webrtc: false } as T;
