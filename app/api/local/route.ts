@@ -1,10 +1,11 @@
 import { candidates } from "@/lib/local/endpoints";
+import { exoWarmup } from "@/lib/local/exo";
 import { offlineFeatures } from "@/lib/local/features";
 import { loadConfig, localOnly, type Role } from "@/lib/local/mode";
 
 export const dynamic = "force-dynamic";
 
-const ROLES: Role[] = ["planner", "fast", "vision", "embed"];
+const ROLES: Role[] = ["planner", "fast", "vision", "embed", "heavy"];
 
 /** What this local-only install is using, and which hosted features are turned off. */
 export async function GET() {
@@ -19,9 +20,11 @@ export async function GET() {
       skipped: found.skipped,
     };
   }
+  const warming = exoWarmup();
   return Response.json({
     localOnly: true,
     features: offlineFeatures(),
+    exo: warming ? { warming: { endpoint: warming.endpoint, model: warming.model, forMs: Date.now() - warming.since } } : { warming: null },
     roles,
     endpoints: cfg.llm.endpoints.map((e) => ({ id: e.id, baseUrl: e.baseUrl, provider: e.provider, authenticated: !!(e.apiKey && e.apiKey !== "") })),
     workers: cfg.workers.map((w) => ({ id: w.id, url: w.url, kind: w.kind ?? "native" })),

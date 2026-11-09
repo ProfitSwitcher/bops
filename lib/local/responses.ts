@@ -5,7 +5,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { chat, looseToolCalls, type ChatMessage, type ToolDef } from "./provider";
-import type { Role } from "./mode";
+import { roleChain, type Role } from "./mode";
 import { isCloudModel } from "./models";
 
 type Store = Map<string, ChatMessage[]>;
@@ -27,7 +27,10 @@ export function roleFor(body: ResponseBody): Role {
   const tools = body.tools ?? [];
   const blob = JSON.stringify(body.input ?? "");
   if (tools.some((t) => t.type === "computer") || /input_image|image_url|computer_screenshot/.test(blob)) return "vision";
-  if (body.reasoning?.effort === "none") return "fast";
+  const effort = body.reasoning?.effort;
+  if (effort === "high" || effort === "xhigh" || effort === "max") return "heavy";
+  if (body.model && roleChain("heavy").some((s) => s.model.toLowerCase() === body.model!.toLowerCase())) return "heavy";
+  if (effort === "none") return "fast";
   if (typeof body.max_output_tokens === "number" && body.max_output_tokens > 0 && body.max_output_tokens <= 1500 && !tools.length) return "fast";
   return "planner";
 }

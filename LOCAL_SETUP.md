@@ -8,8 +8,8 @@ Model names and which machine serves them are configuration. The file `bops.loca
 
 | Machine | Role | Notes |
 |---|---|---|
-| Studio 3 | App host and primary inference | Mac Studio, M3 Ultra, 32 CPU / 80 GPU, 512 GB unified memory. Ollama on loopback. No Docker: the computer worker is native macOS. |
-| Studio 1 | Second inference machine, same hardware | Planner fallback is the MLX model, served however you run MLX (the example uses an authenticated proxy on port 8081). |
+| Studio 3 | App host, primary Ollama, and one node of the exo cluster | Mac Studio, M3 Ultra, 32 CPU / 80 GPU, 512 GB unified memory. Ollama on loopback. exo's API is `http://127.0.0.1:52415/v1` on this machine too. No Docker: the computer worker is native macOS. |
+| Studio 1 | exo master, second Ollama machine, same hardware | Joins Studio 3 over Thunderbolt RDMA. Planner fallback is the MLX model, served however you run MLX (the example uses an authenticated proxy on port 8081). |
 | Geforce5 | Fast and vision when the Studios' copies are missing, and a Windows worker | RTX 5090 Laptop, 24 GB VRAM. The 122B and 27B-q8 models do not fit. Its vision tag is `qwen3.8:latest` at q4_K_M, and its fast tag is `qwen3:4b`. Ollama or llama.cpp with CUDA. |
 | PC4 | Optional worker only | Windows 11, i7-6770HQ, 32 GB, no CUDA, virtualization reported off. Not an inference target. Address on the LAN is 192.168.1.128; put that in `bops.local.json` only if you add the worker. |
 
@@ -22,9 +22,24 @@ Edit `bops.local.json`. Empty `apiKey` is allowed only for loopback. Every other
 | Role | First choice | Then |
 |---|---|---|
 | Planner | `ornith-1.5:122b` on Studio 3 | `qwen3.8-flash-next:125b-mlx` on Studio 1, then `qwen3.5:122b` |
+| Heavy (hard planning and coding) | exo on the Studio cluster, first `mlx-community/Kimi-K2.7-Code-4bit` | the other downloaded exo ids in `bops.local.example.json`, then the Ollama planner |
 | Vision / computer use | `qwen3.8:27b-q8_0` on Studio 3 | the same tag on Studio 1, then `qwen3.8:latest` (q4_K_M) on Geforce5, then `qwen3.5:122b` |
 | Fast / router | `nemotron-3.5-lightning:30b` on Studio 3 | the same tag on Studio 1, then `qwen3:30b`, then `qwen3:4b` on Geforce5 |
 | Embeddings | `qwen3-embedding:8b` on Studio 3 | the same tag on Studio 1, then Geforce5 |
+
+Hard tasks (high effort) use the heavy role. A model still downloading, including GLM-5.3-Flash until exo's `/state` marks it `DownloadCompleted`, is skipped. The `/v1/models` catalog lists models that are not on disk and is not used as the allow list. Chat is sent only for a model `/state` reports as fully downloaded, so a request does not start a Hugging Face download. Loading an already-downloaded model into memory can take several minutes. Settings shows "Warming up" while that request is in flight. The wait is `BOPS_EXO_LOAD_TIMEOUT_MS` (default 10 minutes). If exo is down, or none of its configured models are fully downloaded, the heavy role continues to the Ollama planner.
+
+### exo
+
+Run exo on Studio 1 and Studio 3 with Hugging Face offline. Set this in the environment of the exo process on both machines, before exo starts:
+
+```bash
+export HF_HUB_OFFLINE=1
+```
+
+The cluster is one exo over Thunderbolt RDMA. Either studio's API on port 52415 sees the same models. The example points the app at `http://127.0.0.1:52415/v1` because Studio 3 runs the app. Change `exo.baseUrl` if the app runs somewhere else, and put the token-checking proxy in front if that address is not loopback.
+
+Downloaded ids you can put on the heavy chain today include `mlx-community/Kimi-K2.7-Code-4bit`, `Qwen3-Coder-480B-8bit`, `GLM-5.2`, `DeepSeek-V4-Flash`, `Kimi-K2.6`, `MiniMax-M2.7`, `MiniMax-M3`, `Nemotron-3-Ultra-550B`, `Qwen3-VL-30B-A3B-8bit`, and `Qwen3.8-27B-bf16`. Use the id `/state` shows. `BOPS_LLM_HEAVY_MODEL` prepends one id without editing the file.
 
 Environment variables prepend one step without editing the file: `BOPS_LLM_PLANNER_MODEL`, `BOPS_LLM_FAST_MODEL`, `BOPS_LLM_VISION_MODEL`, `BOPS_LLM_EMBED_MODEL`, and `BOPS_LLM_<ROLE>_ENDPOINT`. A value containing `:cloud` is ignored.
 

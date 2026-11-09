@@ -92,6 +92,9 @@ await check("the example config is the model plan", async () => {
   assert.equal(cfg.llm.roles.vision.chain.find((s) => s.endpoint === "geforce5").quant, "q4_K_M");
   assert.equal(cfg.llm.roles.fast.chain.at(-1).model, "qwen3:4b");
   assert.equal(cfg.llm.roles.embed.chain[0].model, "qwen3-embedding:8b");
+  assert.equal(cfg.llm.roles.heavy.chain[0].model, "mlx-community/Kimi-K2.7-Code-4bit");
+  assert.equal(cfg.llm.roles.heavy.chain.at(-1).model, "qwen3.5:122b");
+  assert.equal(cfg.llm.endpoints.find((e) => e.id === "exo").provider, "exo");
 });
 
 const calls = [];

@@ -4,14 +4,17 @@
  * doesn't have the model. The next configured local model is tried. No cloud fallback.
  */
 import { assertLocalHost, isLocalAddress } from "./egress.mjs";
+import { modelsFromExoState } from "./exo";
 import { assertLocalModel, CloudModelError, hasModel, isCloudModel, modelsFromTagsPayload, type ListedModel } from "./models";
 import { endpointById, loadConfig, roleChain, type ChainStep, type LlmEndpoint, type Role } from "./mode";
 
 export type Health = {
   ok: boolean;
   error?: string;
-  /** Null when the server answered but didn't list models (try the request anyway). */
+  /** Null when the server answered but didn't list models (try the request anyway). Empty means none are usable. */
   models: ListedModel[] | null;
+  /** exo models that are present but not DownloadCompleted. Never sent a chat request. */
+  partial?: string[];
 };
 
 const cache = new Map<string, { at: number; health: Health }>();
@@ -68,6 +71,7 @@ export function markUnhealthy(ep: LlmEndpoint, error: string) {
 }
 
 async function probe(ep: LlmEndpoint, fetchImpl: typeof fetch): Promise<Health> {
+  if (ep.provider === "exo") return probeExo(ep, fetchImpl);
   const headers = authHeaders(ep);
   const origin = originOf(ep.baseUrl);
   const base = ep.baseUrl.replace(/\/+$/, "");
@@ -95,6 +99,23 @@ async function probe(ep: LlmEndpoint, fetchImpl: typeof fetch): Promise<Health> 
     }
   }
   return { ok: false, error: last, models: null };
+}
+
+/** Inventory comes from GET /state only. The /v1/models catalog includes models that are not on disk. */
+async function probeExo(ep: LlmEndpoint, fetchImpl: typeof fetch): Promise<Health> {
+  const headers = authHeaders(ep);
+  try {
+    const res = await fetchImpl(`${originOf(ep.baseUrl)}/state`, { headers, signal: AbortSignal.timeout(PROBE_MS) });
+    if (!res.ok) return { ok: false, error: `${res.status} from /state`, models: null };
+    const { downloaded, downloading } = modelsFromExoState(await res.json().catch(() => null));
+    return {
+      ok: true,
+      models: downloaded.filter((name) => !isCloudModel(name)).map((name) => ({ name, size: 0, cloud: false })),
+      partial: downloading,
+    };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message, models: null };
+  }
 }
 
 export type Attempt = { endpoint: LlmEndpoint; model: string; quant?: string };
@@ -128,6 +149,10 @@ async function consider(step: ChainStep, skipped: string[], fetchImpl: typeof fe
   const health = await checkEndpoint(ep, fetchImpl);
   if (!health.ok) {
     skipped.push(`${ep.id}: ${health.error ?? "unreachable"}`);
+    return [];
+  }
+  if (health.partial?.some((id) => id.toLowerCase() === step.model.toLowerCase())) {
+    skipped.push(`${ep.id} ${step.model} is still downloading, so it is not used`);
     return [];
   }
   if (health.models && !hasModel(health.models, step.model)) {

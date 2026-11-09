@@ -6,8 +6,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isCloudModel } from "./models";
 
-export type ProviderKind = "ollama" | "openai-compatible" | "llamacpp" | "lmstudio" | "mlx" | "vllm";
-export type Role = "planner" | "fast" | "vision" | "embed";
+export type ProviderKind = "ollama" | "openai-compatible" | "llamacpp" | "lmstudio" | "mlx" | "vllm" | "exo";
+export type Role = "planner" | "fast" | "vision" | "embed" | "heavy";
 
 export type LlmEndpoint = {
   id: string;
@@ -32,7 +32,7 @@ export type LocalConfig = {
   memoryPath?: string;
 };
 
-const ROLES: Role[] = ["planner", "fast", "vision", "embed"];
+const ROLES: Role[] = ["planner", "fast", "vision", "embed", "heavy"];
 
 let override: LocalConfig | null = null;
 
@@ -106,6 +106,7 @@ function emptyConfig(): LocalConfig {
         vision: { chain: [{ endpoint: "studio3", model: "qwen3.8:27b-q8_0" }] },
         fast: { chain: [{ endpoint: "studio3", model: "nemotron-3.5-lightning:30b" }] },
         embed: { chain: [{ endpoint: "studio3", model: "qwen3-embedding:8b" }] },
+        heavy: { chain: [{ endpoint: "studio3", model: "ornith-1.5:122b" }] },
       },
     },
     workers: [{ id: "studio3", url: "http://127.0.0.1:8791", token: "", kind: "native" }],
@@ -119,6 +120,7 @@ function applyEnv(cfg: LocalConfig): LocalConfig {
     fast: "BOPS_LLM_FAST_MODEL",
     vision: "BOPS_LLM_VISION_MODEL",
     embed: "BOPS_LLM_EMBED_MODEL",
+    heavy: "BOPS_LLM_HEAVY_MODEL",
   };
   for (const role of ROLES) {
     const model = process.env[keys[role]]?.trim();

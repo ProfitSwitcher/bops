@@ -24,6 +24,12 @@
         "baseUrl": "http://geforce5.local:11435/v1",
         "provider": "ollama",
         "apiKey": "change-me"
+      },
+      {
+        "id": "exo",
+        "baseUrl": "http://127.0.0.1:52415/v1",
+        "provider": "exo",
+        "apiKey": ""
       }
     ],
     "roles": {
@@ -58,6 +64,20 @@
           { "endpoint": "studio3", "model": "qwen3-embedding:8b" },
           { "endpoint": "studio1", "model": "qwen3-embedding:8b" },
           { "endpoint": "geforce5", "model": "qwen3-embedding:8b" }
+        ]
+      },
+      "heavy": {
+        "chain": [
+          { "endpoint": "exo", "model": "mlx-community/Kimi-K2.7-Code-4bit" },
+          { "endpoint": "exo", "model": "Qwen3-Coder-480B-8bit" },
+          { "endpoint": "exo", "model": "GLM-5.2" },
+          { "endpoint": "exo", "model": "DeepSeek-V4-Flash" },
+          { "endpoint": "exo", "model": "Kimi-K2.6" },
+          { "endpoint": "exo", "model": "MiniMax-M2.7" },
+          { "endpoint": "exo", "model": "MiniMax-M3" },
+          { "endpoint": "exo", "model": "Nemotron-3-Ultra-550B" },
+          { "endpoint": "studio3", "model": "ornith-1.5:122b" },
+          { "endpoint": "studio3", "model": "qwen3.5:122b" }
         ]
       }
     }

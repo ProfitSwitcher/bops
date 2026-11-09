@@ -2,8 +2,9 @@
  * OpenAI-compatible chat and embeddings against the configured local chain.
  * Talks to /v1 first, then the native Ollama routes older servers still use.
  */
-import { authHeaders, originOf, withRole, type Attempt } from "./endpoints";
-import { assertLocalModel, CloudModelError } from "./models";
+import { authHeaders, checkEndpoint, originOf, withRole, type Attempt } from "./endpoints";
+import { beginExoWarmup, endExoWarmup, exoLoadTimeoutMs } from "./exo";
+import { assertLocalModel, CloudModelError, hasModel } from "./models";
 import type { Role } from "./mode";
 
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
@@ -25,6 +26,10 @@ export type ChatResult = {
 };
 
 const CHAT_MS = 180_000;
+
+function chatTimeout(attempt: Attempt): number {
+  return attempt.endpoint.provider === "exo" ? exoLoadTimeoutMs() : CHAT_MS;
+}
 
 export async function chat(opts: {
   role: Role;
@@ -50,13 +55,22 @@ export async function chat(opts: {
 
 async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], hasImage: boolean, fetchImpl: typeof fetch = fetch): Promise<Omit<ChatResult, "model" | "endpoint">> {
   assertLocalModel(attempt.model);
+  if (attempt.endpoint.provider === "exo") await assertExoReady(attempt, fetchImpl);
   const headers = { "Content-Type": "application/json", ...authHeaders(attempt.endpoint) };
   const base = attempt.endpoint.baseUrl.replace(/\/+$/, "");
   const body: Record<string, unknown> = { model: attempt.model, messages, temperature: 0.2 };
   if (tools.length) body.tools = tools;
-  const res = await fetchImpl(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(CHAT_MS) });
+  const timeout = chatTimeout(attempt);
+  const exo = attempt.endpoint.provider === "exo";
+  if (exo) beginExoWarmup(attempt.endpoint.id, attempt.model);
+  let res: Response;
+  try {
+    res = await fetchImpl(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) });
+  } finally {
+    if (exo) endExoWarmup(attempt.endpoint.id, attempt.model);
+  }
   let payload: unknown;
-  if (res.status === 404 || res.status === 405) {
+  if ((res.status === 404 || res.status === 405) && !exo) {
     payload = await nativeChat(attempt, messages, tools, headers, fetchImpl);
   } else if (!res.ok) {
     const text = (await res.text()).slice(0, 500);
@@ -67,7 +81,7 @@ async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDe
         method: "POST",
         headers,
         body: JSON.stringify({ model: attempt.model, messages: withToolHint(messages, tools), temperature: 0.2 }),
-        signal: AbortSignal.timeout(CHAT_MS),
+        signal: AbortSignal.timeout(timeout),
       });
       if (!bare.ok) throw new Error((await bare.text()).slice(0, 500));
       payload = await bare.json();
@@ -113,6 +127,14 @@ async function nativeChat(attempt: Attempt, messages: ChatMessage[], tools: Tool
     ],
     usage: { prompt_tokens: json.prompt_eval_count, completion_tokens: json.eval_count, total_tokens: (json.prompt_eval_count ?? 0) + (json.eval_count ?? 0) },
   };
+}
+
+/** Refuse a chat that would ask exo to fetch weights. /state is already cached by the health check. */
+async function assertExoReady(attempt: Attempt, fetchImpl: typeof fetch) {
+  const health = await checkEndpoint(attempt.endpoint, fetchImpl);
+  const name = attempt.model;
+  if (health.partial?.some((id) => id.toLowerCase() === name.toLowerCase())) throw new Error(`${name} is still downloading on exo`);
+  if (!health.models || !hasModel(health.models, name)) throw new Error(`${name} is not fully downloaded on exo`);
 }
 
 function toNative(m: ChatMessage) {
