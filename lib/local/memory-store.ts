@@ -67,12 +67,13 @@ function row(r: { id: string; content: string; session_id: string | null; create
   return { id: r.id, content: r.content, sessionId: r.session_id, createdAt: new Date(r.created_at).toISOString() };
 }
 
-export async function addFacts(bank: string, items: { content: string; sessionId?: string }[]): Promise<Fact[]> {
+export async function addFacts(bank: string, items: { content: string; sessionId?: string }[], opts: { embedMs?: number } = {}): Promise<Fact[]> {
   const database = memoryDb();
   const made: Fact[] = [];
   let vectors: number[][] | null = null;
   try {
-    vectors = await embed(items.map((i) => i.content));
+    const pending = embed(items.map((i) => i.content));
+    vectors = opts.embedMs ? await Promise.race([pending, new Promise<null>((r) => setTimeout(() => r(null), opts.embedMs))]) : await pending;
   } catch {
     vectors = null;
   }
@@ -108,6 +109,52 @@ export function listFacts(bank: string, opts: { sessionIds?: string[]; limit?: n
   }
   const rows = memoryDb().prepare("SELECT id, content, session_id, created_at FROM facts WHERE bank = ? ORDER BY created_at DESC LIMIT ?").all(bank, limit) as { id: string; content: string; session_id: string | null; created_at: number }[];
   return rows.map(row);
+}
+
+/** "my shop truck is blue" becomes "Sam's shop truck is blue". */
+export function asThirdPerson(fact: string, name = "The user"): string {
+  let t = fact.trim().replace(/^(please\s+)?remember(\s+for\s+later)?\s*[:,.\-]?\s*/i, "");
+  t = t.replace(/\bI'm\b/g, `${name} is`).replace(/\bI am\b/gi, `${name} is`).replace(/\bI've\b/g, `${name} has`);
+  t = t.replace(/\bmy\b/gi, `${name}'s`).replace(/\bmine\b/gi, `${name}'s`);
+  t = t.replace(/\bI\b/g, name);
+  return t.replace(/\s+/g, " ").trim();
+}
+
+/** True when two facts say the same thing, ignoring first person and punctuation. */
+export function sameFact(a: string, b: string, name = "The user"): boolean {
+  const na = asThirdPerson(a, name).toLowerCase().replace(/[^a-z0-9\s']/g, " ").replace(/\s+/g, " ").trim();
+  const nb = asThirdPerson(b, name).toLowerCase().replace(/[^a-z0-9\s']/g, " ").replace(/\s+/g, " ").trim();
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const ta = tokens(na);
+  const tb = tokens(nb);
+  if (!ta.size || !tb.size) return false;
+  let n = 0;
+  for (const t of ta) if (tb.has(t)) n++;
+  return n / Math.min(ta.size, tb.size) >= 0.8;
+}
+
+export async function closestFact(bank: string, query: string): Promise<{ content: string; score: number } | null> {
+  const rows = memoryDb().prepare("SELECT content, embedding FROM facts WHERE bank = ?").all(bank) as { content: string; embedding: string | null }[];
+  if (!rows.length) return null;
+  let queryVec: number[] | null = null;
+  if (rows.some((r) => r.embedding)) {
+    try {
+      queryVec = (await embed([query]))[0] ?? null;
+    } catch {
+      queryVec = null;
+    }
+  }
+  let best: { content: string; score: number } | null = null;
+  const words = tokens(query);
+  for (const r of rows) {
+    const vec = r.embedding ? (JSON.parse(r.embedding) as number[]) : null;
+    const cosine = queryVec && vec ? similarity(queryVec, vec) : 0;
+    const lexical = overlap(words, tokens(r.content));
+    const score = Math.max(cosine, lexical);
+    if (!best || score > best.score) best = { content: r.content, score };
+  }
+  return best;
 }
 
 export async function searchFacts(bank: string, query: string, limit: number): Promise<Fact[]> {

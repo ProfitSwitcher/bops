@@ -33,7 +33,10 @@ const { parseConfig, useConfig, loadConfig, localOnly, callStartAllowed } = awai
 const { clearHealth, withRole, checkEndpoint } = await import("../lib/local/endpoints.ts");
 const { chat, embed, looseToolCalls } = await import("../lib/local/provider.ts");
 const { localScreens, screensAdvanced, localOrgoCall, localOrgoAnswered, resetLocalComputersForTests, localComputerMissing } = await import("../lib/local/orgo-adapter.ts");
-const { localComputerTurn, screenResetPlan, workerAction } = await import("../lib/local/computer-session.ts");
+const { localComputerTurn, screenResetPlan, workerAction, SCREEN_LOCKED } = await import("../lib/local/computer-session.ts");
+const { solidPng, fitPng, scaleCoord } = await import("../lib/local/png-fit.ts");
+const { asThirdPerson, sameFact } = await import("../lib/local/memory-store.ts");
+const { scaleAction } = await import("../lib/local/computer-use.ts");
 const { isSimpleLocalChat, localNeedsMemory, stripImitatedDeeds, taskFromPromise } = await import("../lib/local/fast-chat.ts");
 const { transcribeLocal } = await import("../lib/local/speech.ts");
 const { deleteSession, listFacts } = await import("../lib/local/memory-store.ts");
@@ -612,6 +615,10 @@ await check("a repeated computer action stops the loop", async () => {
   const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "" });
   const vision = await listen(async (req, res) => {
     if (req.url === "/api/tags") return json(res, { models: [{ name: "qwen3.8:27b-q8_0" }] });
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    if (!body.tools) return json(res, { choices: [{ message: { content: "Safari is the frontmost app." } }] });
     asked += 1;
     json(res, { choices: [{ message: { content: "", tool_calls: [{ id: "c", type: "function", function: { name: "computer", arguments: JSON.stringify({ actions: [{ type: "move", x: 1, y: 1 }] }) } }] } }] });
   });
@@ -622,10 +629,67 @@ await check("a repeated computer action stops the loop", async () => {
     },
     workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
   });
-  const text = await localComputerTurn("task-repeat", "move");
-  assert.match(text, /same action repeated/);
+  const text = await localComputerTurn("task-repeat", "what app is frontmost");
+  assert.match(text, /Safari is the frontmost app/);
   assert.equal(asked, 2);
   vision.server.close();
+  worker.server.close();
+});
+
+await check("screenshot coordinates scale from the image back to the screen", async () => {
+  clearHealth();
+  const png = solidPng(1280, 720);
+  const fit = fitPng(png, 1024);
+  assert.equal(fit.screenW, 1280);
+  assert.equal(fit.sentW, 1024);
+  assert.equal(fit.sentH, 576);
+  assert.equal(scaleCoord(512, 1280, 1024), 640);
+  assert.equal(scaleCoord(288, 1280, 1024), 360);
+  const seen = [];
+  const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "" });
+  const vision = await listen(async (req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "qwen3.8:27b-q8_0" }] });
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    seen.push(JSON.stringify(body.messages ?? body));
+    json(res, { choices: [{ message: { content: "The desktop is showing.", tool_calls: [{ id: "c", type: "function", function: { name: "computer", arguments: JSON.stringify({ done: true, actions: [{ type: "move", x: 512, y: 288 }] }) } }] } }] });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "v", baseUrl: `${vision.url}/v1`, provider: "ollama" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [{ endpoint: "v", model: "qwen3.8:27b-q8_0" }] }, embed: { chain: [] }, heavy: { chain: [] } },
+    },
+    workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
+  });
+  const made = await fetch(`http://127.0.0.1:${worker.port}/v1/sessions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const session = await made.json();
+  const { runComputerUseLoop } = await import("../lib/local/computer-use.ts");
+  await runComputerUseLoop({
+    goal: "move to the center",
+    screenshot: async () => ({ mime: "image/png", base64: png.toString("base64") }),
+    act: async (actions) => {
+      await fetch(`http://127.0.0.1:${worker.port}/v1/sessions/${session.id}/move`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ x: actions[0].x, y: actions[0].y }) });
+      return "moved";
+    },
+  });
+  const got = worker.sessions.get(session.id).actions.find((a) => a.op === "move");
+  assert.equal(got.body.x, 640);
+  assert.equal(got.body.y, 360);
+  assert.match(seen.join("\n"), /1024/);
+  assert.equal(scaleAction({ type: "move", x: 512, y: 288 }, 1280, 1024).x, 640);
+  vision.server.close();
+  worker.server.close();
+});
+
+await check("a locked screen stops a computer task", async () => {
+  const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "", locked: true });
+  useConfig({
+    llm: { endpoints: [], roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [] } } },
+    workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
+  });
+  const text = await localComputerTurn("task-locked", "look at the screen");
+  assert.equal(text, SCREEN_LOCKED);
   worker.server.close();
 });
 
@@ -638,6 +702,8 @@ await check("a local screen reset does not write /usr/local/bin", async () => {
   assert.equal(localNeedsMemory("Start a task to take a screenshot"), false);
   assert.equal(localNeedsMemory("remember that I prefer tea"), true);
   assert.equal(isSimpleLocalChat("Please remember for later: my shop truck is blue"), false);
+  assert.equal(asThirdPerson("my shop truck is blue", "Sam"), "Sam's shop truck is blue");
+  assert.equal(sameFact("my shop truck is blue", "Sam's shop truck is blue", "Sam"), true);
   const history = '[What was done: started the task "Screenshot and center mouse"]';
   const user = "Start another task: move the pointer to (300, 200) and take a screenshot. (use start_task)";
   const reply = "Moving the pointer to (300, 200) and taking a screenshot now.";

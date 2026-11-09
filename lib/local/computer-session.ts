@@ -112,8 +112,12 @@ export async function actOnLocalComputer(computerId: string, action: ComputerAct
   await localOrgoCall("POST", `/computers/${encodeURIComponent(computerId)}${req.path}`, req.body);
 }
 
+export const SCREEN_LOCKED = "This Mac's screen is locked; unlock it to run screen tasks.";
+
 export async function localComputerTurn(sessionId: string, goal: string, fetchImpl: typeof fetch = fetch, onStep?: (action: ComputerAction) => void): Promise<string> {
   const w = worker();
+  const health = await fetchImpl(`${w.url}/health`, { signal: AbortSignal.timeout(3_000) }).then(async (r) => (r.ok ? ((await r.json()) as { locked?: boolean }) : null)).catch(() => null);
+  if (health?.locked) return SCREEN_LOCKED;
   const made = await fetchImpl(`${w.url}/v1/sessions`, { method: "POST", headers: headers(w), body: JSON.stringify({ name: sessionId }), signal: AbortSignal.timeout(15_000) });
   if (!made.ok) throw new Error(`The local worker did not open a session (${made.status}).`);
   const session = (await made.json()) as { id: string };

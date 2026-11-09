@@ -2661,6 +2661,8 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     // The API calls made with the user's keys, kept on the reply (Message.called) and said in the chat.
     const called: string[] = [];
     type Args = Record<string, unknown> & { query?: string; action?: string; arguments?: Record<string, unknown>; fact?: string; question?: string };
+    let remembered = false;
+    let forcedReply: string | undefined;
     /**
      * One lookup's answer for the model: what it found, did or couldn't do, in plain words. Every name in LOOKUPS
      * has its branch. `bring` takes what it brought in from outside (a page read, an email that came, what an app
@@ -2675,7 +2677,13 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       if (CRM_TOOL_NAMES.has(name)) readFrom.add("Your CRM");
       if (ORBIT_TOOL_NAMES.has(name)) readFrom.add("Knowledge");
       // Into and out of its memory scope: its own bank while it keeps its memory to itself (lib/chain.ts).
-      if (name === "remember") return learn(scopeOf(botId), a.fact ?? "", chatId).catch(failed);
+      if (name === "remember") {
+        remembered = true;
+        const t = Date.now();
+        const out = await learn(scopeOf(botId), a.fact ?? "", chatId).catch(failed);
+        chatStage("remember-tool", t);
+        return out;
+      }
       if (name === "recall") return recall(scopeOf(botId), a.question ?? "").catch(failed);
       // A dear lookup, an email to someone else, a call that changes something with one of the user's keys, an app
       // action that changes something: each asks the user (NeedsOk) unless the bot's rules allow it, and the turn
@@ -2997,11 +3005,18 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
         return { text: null, paused: true };
       }
       outOfSteps = round === rounds - 1;
+      const roundAt = Date.now();
+      if (localOnly() && calls.length && calls.every((c) => c.name === "remember") && !rest.some((c) => c.name !== "remember")) {
+        chatStage("model-round", roundAt, "skip");
+        forcedReply = outputs.map((o) => (typeof o.output === "string" ? o.output : "Saved.")).join(" ") || "Saved.";
+        break;
+      }
       response = await create(
         [...answers.map((x) => ({ type: "function_call_output" as const, ...x })), ...(outOfSteps ? [{ role: "developer" as const, content: OUT_OF_STEPS }] : [])],
         response.id,
         outOfSteps,
       );
+      chatStage("model-round", roundAt);
       stillOurs(ours);
       recordTokens("chat", response.model, response.usage, botId);
       sawWeb(response.output);
@@ -3206,7 +3221,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     if (opts.emailBack) for (const id of sessionIds) patchSession(id, { emailBack: opts.emailBack });
     // A thread this turn sent something the user kept between us to is kept between us too, and so is the reply naming it (Session.secret).
     if (sessionIds.length && isSecret(opts.answering)) for (const id of sessionIds) patchSession(id, { secret: true });
-    let spoken = response.output_text ?? "";
+    let spoken = forcedReply ?? response.output_text ?? "";
     if (localOnly()) {
       const imitated = stripImitatedDeeds(spoken);
       spoken = imitated.text;
@@ -3217,7 +3232,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
           : taskFromPromise(asked, spoken, false);
         if (plan) sessionIds.push(startSession({ botId, goal: plan.goal, title: plan.title, chatId, sentVia: "you", where: "auto" }).id);
       }
-      rememberAfterReply(scopeOf(botId), chatId, lastWords(chatId));
+      rememberAfterReply(scopeOf(botId), chatId, lastWords(chatId), { skip: remembered });
     }
     const tidy = tidyAnswer(spoken);
     const text = tidy.text.trim();

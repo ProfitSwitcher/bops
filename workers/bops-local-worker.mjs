@@ -50,7 +50,10 @@ export function startWorker(opts = {}) {
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url || "/", "http://127.0.0.1");
-      if (url.pathname === "/health") return send(res, 200, { ok: true, kind });
+      if (url.pathname === "/health") {
+        const locked = opts.locked === true || (kind !== "fake" && (await macScreenLocked()));
+        return send(res, 200, { ok: true, kind, locked });
+      }
       if (!authorized(req, token, loopbackOnly)) return send(res, 401, { error: "Unauthorized" });
       if (req.method === "POST" && url.pathname === "/v1/sessions") {
         const body = await readJson(req);
@@ -156,6 +159,24 @@ async function act(op, body) {
 
 /** osascript must not wait on an Automation prompt. */
 export const OSA_TIMEOUT_MS = 8000;
+
+/** True when the Mac's session says the screen is locked. A hang counts as not locked. */
+export function macLockScript() {
+  return `ObjC.import("CoreGraphics");
+const d = $.CGSessionCopyCurrentDictionary();
+const v = d && d.objectForKey("CGSSessionScreenIsLocked");
+v && (v === true || v.boolValue) ? "locked" : "open";`;
+}
+
+async function macScreenLocked() {
+  if (process.platform !== "darwin") return false;
+  try {
+    const out = await run("osascript", ["-l", "JavaScript", "-e", macLockScript()], { timeoutMs: 2000, allowFail: true });
+    return /locked/.test(out.stdout || "");
+  } catch {
+    return false;
+  }
+}
 
 function osa(script) {
   return run("osascript", ["-l", "JavaScript", "-e", script], { timeoutMs: OSA_TIMEOUT_MS });
