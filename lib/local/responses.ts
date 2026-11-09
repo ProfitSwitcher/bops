@@ -41,10 +41,27 @@ export function roleFor(body: ResponseBody): Role {
   return "planner";
 }
 
+/** The latest image stays on the last message, so a follow-up picture is what the vision model answers. */
+export function focusLatestImage(messages: ChatMessage[]): ChatMessage[] {
+  let last = -1;
+  for (let i = 0; i < messages.length; i++) {
+    const content = messages[i].content;
+    if (Array.isArray(content) && content.some((p) => p.type === "image_url")) last = i;
+  }
+  if (last < 0 || last === messages.length - 1) return messages;
+  const image = messages[last];
+  return [
+    ...messages.slice(0, last),
+    ...messages.slice(last + 1),
+    { role: "system", content: "The next message is the latest one. Answer it, and look at its image. Earlier messages are context only." },
+    image,
+  ];
+}
+
 export async function runResponses(body: ResponseBody, fetchImpl?: typeof fetch) {
   const role = roleFor(body);
   const prefer = body.model && !isCloudModel(body.model) && !/^gpt-|^(o1|o3|o4)/.test(body.model) ? body.model : undefined;
-  let messages = restore(body);
+  let messages = focusLatestImage(restore(body));
   const tools = toTools(body.tools ?? []);
   let result = await chat({ role, messages, tools, preferModel: prefer, fetchImpl });
   let guard = 0;

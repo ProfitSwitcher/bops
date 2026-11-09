@@ -31,6 +31,8 @@ export type LocalConfig = {
   };
   workers: { id: string; url: string; token?: string; kind?: "native" | "browser" | "fake" }[];
   memoryPath?: string;
+  /** When true, a heavy model may stop a different exo instance that does not leave enough memory. Default off. */
+  exo?: { allowEvict?: boolean };
 };
 
 const ROLES: Role[] = ["planner", "fast", "vision", "embed", "heavy"];
@@ -83,6 +85,7 @@ export function parseConfig(text: string, from: string): LocalConfig {
     llm?: { endpoints?: Partial<LlmEndpoint>[]; roles?: Partial<Record<Role, { chain?: Partial<ChainStep>[] }>> };
     workers?: LocalConfig["workers"];
     memoryPath?: string;
+    exo?: { allowEvict?: boolean };
   };
   const endpoints: LlmEndpoint[] = (src.llm?.endpoints ?? []).map((e, i) => ({
     id: String(e.id || `endpoint-${i + 1}`),
@@ -103,7 +106,21 @@ export function parseConfig(text: string, from: string): LocalConfig {
     llm: { endpoints, roles },
     workers: (src.workers ?? []).map((w) => ({ ...w, url: String(w.url || "").replace(/\/+$/, "") })).filter((w) => w.id && w.url),
     memoryPath: src.memoryPath,
+    ...(src.exo?.allowEvict === true ? { exo: { allowEvict: true } } : {}),
   };
+}
+
+/** Stop another exo instance so a heavy model can load. Off unless the config or BOPS_EXO_ALLOW_EVICT says so. */
+export function exoAllowEvict(): boolean {
+  const v = (process.env.BOPS_EXO_ALLOW_EVICT ?? "").trim().toLowerCase();
+  if (v === "1" || v === "true" || v === "on") return true;
+  if (v === "0" || v === "false" || v === "off") return false;
+  return loadConfig().exo?.allowEvict === true;
+}
+
+/** The app's owner while local-only is on. No Orgo or Google account. */
+export function localOwnerStatus() {
+  return { signedIn: true, user: { id: "local", name: "Local" }, needsSignIn: false, cloudProblem: false };
 }
 
 function emptyConfig(): LocalConfig {

@@ -36,7 +36,7 @@ const { runResponses, resetResponsesForTests } = await import("../lib/local/resp
 const { runComputerUseLoop } = await import("../lib/local/computer-use.ts");
 const { addFacts, searchFacts, closeMemoryForTests, memoryDb } = await import("../lib/local/memory-store.ts");
 const { installEgressGuard, LocalOnlyError, refusedConnections } = await import("../lib/local/egress.mjs");
-const { startWorker, refuseBind } = await import("../workers/bops-local-worker.mjs");
+const { startWorker, refuseBind, macKeyScript, macPointerScript } = await import("../workers/bops-local-worker.mjs");
 const { startProxy } = await import("../workers/bops-llm-proxy.mjs");
 
 let failed = 0;
@@ -327,6 +327,66 @@ await check("the llm proxy requires a token and stays on loopback upstream", asy
   assert.throws(() => startProxy({ bind: "0.0.0.0", token: "secret", upstream: upstream.url }), /every interface/);
   proxy.server.close();
   upstream.server.close();
+});
+
+await check("a follow-up image is the message the vision model answers", async () => {
+  clearHealth();
+  resetResponsesForTests();
+  let sent;
+  const vision = await listen(async (req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "qwen3.8:27b-q8_0" }] });
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    sent = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    json(res, { choices: [{ message: { content: "a red square" } }] });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "v", baseUrl: `${vision.url}/v1`, provider: "ollama" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [{ endpoint: "v", model: "qwen3.8:27b-q8_0" }] }, embed: { chain: [] }, heavy: { chain: [] } },
+    },
+    workers: [],
+  });
+  const out = await runResponses({
+    input: [
+      { role: "user", content: "What is the capital of France?" },
+      { role: "assistant", content: "Paris." },
+      { role: "user", content: [{ type: "input_text", text: "What is in this picture?" }, { type: "input_image", image_url: "data:image/png;base64,NEWIMAGE" }] },
+      { role: "developer", content: "As of now: Monday" },
+    ],
+  });
+  const last = JSON.stringify(sent.messages.at(-1));
+  assert.match(last, /NEWIMAGE/);
+  assert.match(last, /What is in this picture/);
+  assert.equal(last.includes("capital of France"), false);
+  assert.equal(last.includes("As of now"), false);
+  assert.equal(out.model, "qwen3.8:27b-q8_0");
+  vision.server.close();
+});
+
+await check("mac keys are key codes, and move and scroll post core graphics events", async () => {
+  assert.match(macKeyScript("Return"), /key code 36$/);
+  assert.doesNotMatch(macKeyScript("Return"), /keystroke|Return/);
+  assert.match(macKeyScript("Tab"), /key code 48$/);
+  assert.match(macKeyScript("Escape"), /key code 53$/);
+  assert.match(macKeyScript("Delete"), /key code 51$/);
+  assert.match(macKeyScript("Left"), /key code 123$/);
+  assert.match(macKeyScript("Down"), /key code 125$/);
+  assert.match(macKeyScript("cmd+c"), /key code 8 using \{command down\}/);
+  assert.match(macKeyScript("ctrl+shift+Tab"), /key code 48 using \{control down, shift down\}/);
+  assert.match(macKeyScript("alt+Left"), /key code 123 using \{option down\}/);
+  assert.match(macKeyScript("shift+Return"), /key code 36 using \{shift down\}/);
+  assert.match(macKeyScript("cmd+ctrl+alt+shift+Escape"), /key code 53 using \{command down, control down, option down, shift down\}/);
+  assert.match(macKeyScript("a"), /key code 0$/);
+  assert.match(macKeyScript("/"), /keystroke "\/"/);
+  assert.throws(() => macKeyScript("ReturnKey"), /Unknown key/);
+  const move = macPointerScript("/move", { x: 12, y: 34 });
+  assert.match(move, /CGEventCreateMouseEvent/);
+  assert.match(move, /CGPointMake\(12, 34\)/);
+  assert.doesNotMatch(move, /CGEventCreateScrollWheelEvent/);
+  const scroll = macPointerScript("/scroll", { x: 3, y: 4, scroll_y: 120, scroll_x: -40 });
+  assert.match(scroll, /CGEventCreateMouseEvent/);
+  assert.match(scroll, /CGEventCreateScrollWheelEvent\(src, 0, 2, -120, -40\)/);
 });
 
 await check("egress tripwire refuses public hosts and still allows loopback", async () => {

@@ -1,6 +1,6 @@
 # Local setup
 
-This fork runs Bops on your own machines. After the software and the models are downloaded, chat, tool calling, computer use, and memory keep working with internet egress blocked. `BOPS_LOCAL_ONLY` defaults to on. The app does not fall back to OpenAI, Orgo, Honcho, or any other hosted API.
+This fork runs Bops on your own machines. After the software and the models are downloaded, chat, tool calling, computer use, and memory keep working with internet egress blocked. `BOPS_LOCAL_ONLY` defaults to on. The app does not fall back to OpenAI, Orgo, Honcho, or any other hosted API. It also does not ask for an Orgo, Google, or email sign-in. You are the local owner. A password in front of the server is what keeps the home network out.
 
 Model names and which machine serves them are configuration. The file `bops.local.example.json` is the default plan below. Copy it to `bops.local.json` and change hosts, tokens, and tags without touching code. A `:cloud` Ollama tag is dropped wherever it appears. `glm-5.3-flash` is one of those: Ollama only offers it as a cloud model.
 
@@ -40,6 +40,8 @@ export HF_HUB_OFFLINE=1
 The cluster is one exo over Thunderbolt RDMA. Either studio's API on port 52415 sees the same models. The example points the app at `http://127.0.0.1:52415/v1` because Studio 3 runs the app. Change `exo.baseUrl` if the app runs somewhere else, and put the token-checking proxy in front if that address is not loopback.
 
 A model is eligible when at least one node has finished downloading it and no node is still downloading it or has failed. exo can place that copy on the machine that holds the weights, so Kimi and Qwen3-Coder count when they are complete on Studio 1 only. The ids in the example are the ones `/state` reports: `mlx-community/Kimi-K2.7-Code-4bit`, `mlx-community/Qwen3-Coder-480B-A35B-Instruct-8bit`, `mlx-community/GLM-5.2-mxfp4`, and `MiniMaxAI/MiniMax-M2.7`. Add others from `/state` the same way. `BOPS_LLM_HEAVY_MODEL` prepends one id without editing the file.
+
+Chat on exo needs a running instance. If `/state` has none for the chosen model, the app calls `POST /place_instance` with `{"model_id","sharding":"Tensor","instance_meta":"MlxJaccl","min_nodes":2}` so the pair shares the model, and falls back to pipeline on one node when exo refuses tensor placement. It then polls `/state` until that instance's runners are `RunnerReady`, within `BOPS_EXO_LOAD_TIMEOUT_MS`. An instance that is already running for that model is reused. A different large instance is not stopped when the new one will not fit. Set `"exo": {"allowEvict": true}` or `BOPS_EXO_ALLOW_EVICT=1` to allow that. Otherwise heavy continues to the next model, then the Ollama planner.
 
 Environment variables prepend one step without editing the file: `BOPS_LLM_PLANNER_MODEL`, `BOPS_LLM_FAST_MODEL`, `BOPS_LLM_VISION_MODEL`, `BOPS_LLM_EMBED_MODEL`, and `BOPS_LLM_<ROLE>_ENDPOINT`. A value containing `:cloud` is ignored.
 

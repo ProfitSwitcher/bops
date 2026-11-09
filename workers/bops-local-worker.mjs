@@ -139,7 +139,8 @@ async function act(op, body) {
 async function macAct(op, body) {
   if (op === "/bash") return (await run("bash", ["-lc", String(body.command || "true")])).stdout;
   if (op === "/type") return (await run("osascript", ["-e", `tell application "System Events" to keystroke ${JSON.stringify(String(body.text || ""))}`])).stdout;
-  if (op === "/key") return (await run("osascript", ["-e", `tell application "System Events" to keystroke ${JSON.stringify(String(body.key || ""))}`])).stdout;
+  if (op === "/key") return (await run("osascript", ["-e", macKeyScript(keyInput(body))])).stdout;
+  if (op === "/move" || op === "/scroll") return (await run("osascript", ["-l", "JavaScript", "-e", macPointerScript(op, body)])).stdout;
   if (op === "/click") {
     const x = Math.round(Number(body.x) || 0);
     const y = Math.round(Number(body.y) || 0);
@@ -147,6 +148,76 @@ async function macAct(op, body) {
     return (await run("osascript", ["-e", `tell application "System Events" to click at {${x}, ${y}}`, ...(clicks === 2 ? ["-e", `tell application "System Events" to click at {${x}, ${y}}`] : [])])).stdout;
   }
   return "";
+}
+
+/** US virtual key codes System Events understands. Named keys must not be typed as the word itself. */
+const MAC_KEY_CODES = {
+  return: 36, enter: 36, tab: 48, escape: 53, esc: 53,
+  delete: 51, backspace: 51, forwarddelete: 117, del: 117,
+  left: 123, arrowleft: 123, leftarrow: 123,
+  right: 124, arrowright: 124, rightarrow: 124,
+  down: 125, arrowdown: 125, downarrow: 125,
+  up: 126, arrowup: 126, uparrow: 126,
+  space: 49, home: 115, end: 119, pageup: 116, pagedown: 121,
+  f1: 122, f2: 120, f3: 99, f4: 118, f5: 96, f6: 97, f7: 98, f8: 100, f9: 101, f10: 109, f11: 103, f12: 111,
+  a: 0, s: 1, d: 2, f: 3, h: 4, g: 5, z: 6, x: 7, c: 8, v: 9, b: 11, q: 12, w: 13, e: 14, r: 15, y: 16, t: 17,
+  o: 31, u: 32, i: 34, p: 35, l: 37, j: 38, k: 40, n: 45, m: 46,
+  "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23, "9": 25, "7": 26, "8": 28, "0": 29,
+};
+const MAC_MODIFIERS = { cmd: "command", command: "command", meta: "command", super: "command", ctrl: "control", control: "control", alt: "option", option: "option", opt: "option", shift: "shift" };
+
+function keyInput(body) {
+  if (Array.isArray(body?.keys) && body.keys.length) return body.keys.map(String).join("+");
+  if (Array.isArray(body?.modifiers) && body?.key) return [...body.modifiers, body.key].map(String).join("+");
+  return String(body?.key || "");
+}
+
+/** `{ code, modifiers }` for a key name or a combo such as ctrl+shift+Tab. `code` is null when it is not a named key. */
+export function macKeyPlan(input) {
+  const raw = String(input || "").trim();
+  const parts = raw === "+" ? ["+"] : raw.split("+").map((s) => s.trim()).filter(Boolean);
+  const modifiers = [];
+  const keys = [];
+  for (const part of parts) {
+    const mod = MAC_MODIFIERS[part.toLowerCase()];
+    if (mod && !keys.length) modifiers.push(mod);
+    else keys.push(part);
+  }
+  const name = keys.length === 1 ? keys[0] : "";
+  const code = name ? MAC_KEY_CODES[name.toLowerCase()] : undefined;
+  return { code: code === undefined ? null : code, modifiers: [...new Set(modifiers)] };
+}
+
+/** System Events `key code` with `using {command down, …}`. A single typed character stays a keystroke. */
+export function macKeyScript(input) {
+  const plan = macKeyPlan(input);
+  if (plan.code == null) {
+    const text = String(input || "");
+    if ([...text].length === 1) return `tell application "System Events" to keystroke ${JSON.stringify(text)}`;
+    throw new Error(`Unknown key ${JSON.stringify(text)}`);
+  }
+  const using = plan.modifiers.length ? ` using {${plan.modifiers.map((m) => `${m} down`).join(", ")}}` : "";
+  return `tell application "System Events" to key code ${plan.code}${using}`;
+}
+
+/**
+ * Move and scroll via CoreGraphics. JXA posts CGEventCreateMouseEvent / CGEventCreateScrollWheelEvent.
+ * Positive scroll_y moves the page down (the wheel value is negated; CoreGraphics treats positive as up).
+ */
+export function macPointerScript(op, body) {
+  const x = Math.round(Number(body?.x) || 0);
+  const y = Math.round(Number(body?.y) || 0);
+  const move = `ObjC.import("CoreGraphics");
+const src = $.CGEventSourceCreate(1);
+const p = $.CGPointMake(${x}, ${y});
+const moved = $.CGEventCreateMouseEvent(src, 5, p, 0);
+$.CGEventPost(0, moved);`;
+  if (op === "/move") return move;
+  const dy = Math.round(Number(body?.scroll_y ?? body?.dy ?? body?.deltaY) || 0);
+  const dx = Math.round(Number(body?.scroll_x ?? body?.dx ?? body?.deltaX) || 0);
+  return `${move}
+const wheel = $.CGEventCreateScrollWheelEvent(src, 0, 2, ${-dy}, ${dx});
+$.CGEventPost(0, wheel);`;
 }
 
 async function linuxAct(op, body) {

@@ -3,10 +3,10 @@
  * Talks to /v1 first, then the native Ollama routes older servers still use.
  */
 import { authHeaders, checkEndpoint, originOf, withRole, type Attempt } from "./endpoints";
-import { beginExoWarmup, endExoWarmup, exoLoadTimeoutMs } from "./exo";
+import { beginExoWarmup, endExoWarmup, ensureExoInstance, exoLoadTimeoutMs } from "./exo";
 import { cloudPlan, noteLocalAnswer, redactSecrets, tryCloudChat } from "./cloud";
 import { assertLocalModel, CloudModelError, hasModel } from "./models";
-import type { Role } from "./mode";
+import { exoAllowEvict, type Role } from "./mode";
 
 export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 export type ChatMessage = {
@@ -84,6 +84,16 @@ async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDe
   if (exo) beginExoWarmup(attempt.endpoint.id, attempt.model);
   let res: Response;
   try {
+    if (exo) {
+      await ensureExoInstance({
+        origin: originOf(attempt.endpoint.baseUrl),
+        model: attempt.model,
+        headers,
+        fetchImpl,
+        allowEvict: exoAllowEvict(),
+        timeoutMs: timeout,
+      });
+    }
     res = await fetchImpl(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) });
   } finally {
     if (exo) endExoWarmup(attempt.endpoint.id, attempt.model);

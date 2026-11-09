@@ -12,6 +12,7 @@ import { cloudKey, loadOrgoKey, orgoKey, orgoKeyNotOurs, orgoKeyRejected, orgoOr
 import { loopHere, onPostgres, onRunner, StateLoadError } from "./persist";
 import { relayAfterSignIn, stopRelay } from "./relay";
 import { reattachFreeComputer, stopAllSessions } from "./sessions";
+import { localOnly, localOwnerStatus } from "@/lib/local/mode";
 import { bindSignIn, getState, stateInCloud, stateUser, update } from "./store";
 
 /**
@@ -114,6 +115,7 @@ export function approvalPage(verificationUrl: string, userCode: string, provider
 }
 
 export async function startSignIn(provider?: SignInProvider): Promise<SignInStart> {
+  if (localOnly()) throw new SignInError("orgo", "Local-only mode does not sign in with Orgo, Google, or email.");
   const r = await orgoPost<{
     device_code?: string;
     user_code?: string;
@@ -149,6 +151,10 @@ export function pollSignIn(): Promise<SignInPoll> {
 }
 
 async function poll(): Promise<SignInPoll> {
+  if (localOnly()) {
+    g.bopsSignIn = null;
+    return { status: "approved", user: localOwnerStatus().user };
+  }
   const p = g.bopsSignIn;
   if (!p) {
     // Nothing waiting: say whether someone is signed in, the way the gate does (a hosted server binds their state first).
@@ -367,6 +373,8 @@ function loadForKey(key: string, now: boolean): Promise<void> {
  * tries again at once, from the app's Try again).
  */
 export async function authStatus({ retry = false } = {}) {
+  // Home-network access is a password in front of the server. The app does not call Orgo or Google.
+  if (localOnly()) return localOwnerStatus();
   const key = await loadOrgoKey();
   // A runner asks Orgo's profile and loads its state from Bops Cloud with what Bops Cloud takes (its key file while it can't take identity yet).
   if (key && !signedInUser()) await loadForKey(signInKey() ?? key, retry);
