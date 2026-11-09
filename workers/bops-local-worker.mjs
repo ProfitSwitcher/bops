@@ -154,17 +154,19 @@ async function act(op, body) {
   return linuxAct(op, body);
 }
 
+/** osascript must not wait on an Automation prompt. */
+export const OSA_TIMEOUT_MS = 8000;
+
+function osa(script) {
+  return run("osascript", ["-l", "JavaScript", "-e", script], { timeoutMs: OSA_TIMEOUT_MS });
+}
+
 async function macAct(op, body) {
-  if (op === "/bash") return (await run("bash", ["-lc", String(body.command || "true")])).stdout;
-  if (op === "/type") return (await run("osascript", ["-e", `tell application "System Events" to keystroke ${JSON.stringify(String(body.text || ""))}`])).stdout;
-  if (op === "/key") return (await run("osascript", ["-e", macKeyScript(keyInput(body))])).stdout;
-  if (op === "/move" || op === "/scroll") return (await run("osascript", ["-l", "JavaScript", "-e", macPointerScript(op, body)])).stdout;
-  if (op === "/click") {
-    const x = Math.round(Number(body.x) || 0);
-    const y = Math.round(Number(body.y) || 0);
-    const clicks = body.double ? 2 : 1;
-    return (await run("osascript", ["-e", `tell application "System Events" to click at {${x}, ${y}}`, ...(clicks === 2 ? ["-e", `tell application "System Events" to click at {${x}, ${y}}`] : [])])).stdout;
-  }
+  if (op === "/bash") return (await run("bash", ["-lc", String(body.command || "true")], { allowFail: true })).stdout;
+  if (op === "/type") return (await osa(macTypeScript(body.text))).stdout;
+  if (op === "/key") return (await osa(macKeyScript(keyInput(body)))).stdout;
+  if (op === "/move" || op === "/scroll") return (await osa(macPointerScript(op, body))).stdout;
+  if (op === "/click") return (await osa(macClickScript(body))).stdout;
   return "";
 }
 
@@ -206,16 +208,57 @@ export function macKeyPlan(input) {
   return { code: code === undefined ? null : code, modifiers: [...new Set(modifiers)] };
 }
 
-/** System Events `key code` with `using {command down, …}`. A single typed character stays a keystroke. */
+const MAC_FLAG = { command: 1048576, control: 262144, option: 524288, shift: 131072 };
+
+/** CoreGraphics key event. A single character with no virtual key code is typed as Unicode. */
 export function macKeyScript(input) {
   const plan = macKeyPlan(input);
   if (plan.code == null) {
     const text = String(input || "");
-    if ([...text].length === 1) return `tell application "System Events" to keystroke ${JSON.stringify(text)}`;
+    if ([...text].length === 1) return macTypeScript(text);
     throw new Error(`Unknown key ${JSON.stringify(text)}`);
   }
-  const using = plan.modifiers.length ? ` using {${plan.modifiers.map((m) => `${m} down`).join(", ")}}` : "";
-  return `tell application "System Events" to key code ${plan.code}${using}`;
+  const flags = plan.modifiers.reduce((n, m) => n | (MAC_FLAG[m] || 0), 0);
+  return `ObjC.import("CoreGraphics");
+const src = $.CGEventSourceCreate(1);
+const down = $.CGEventCreateKeyboardEvent(src, ${plan.code}, true);
+const up = $.CGEventCreateKeyboardEvent(src, ${plan.code}, false);
+$.CGEventSetFlags(down, ${flags});
+$.CGEventSetFlags(up, ${flags});
+$.CGEventPost(0, down);
+$.CGEventPost(0, up);`;
+}
+
+/** Type text with CGEventKeyboardSetUnicodeString. Accessibility only, no System Events. */
+export function macTypeScript(text) {
+  return `ObjC.import("CoreGraphics");
+ObjC.import("Foundation");
+const src = $.CGEventSourceCreate(1);
+const s = $.NSString.alloc.initWithUTF8String(${JSON.stringify(String(text ?? ""))});
+const down = $.CGEventCreateKeyboardEvent(src, 0, true);
+const up = $.CGEventCreateKeyboardEvent(src, 0, false);
+$.CGEventKeyboardSetUnicodeString(down, s.length, s.UTF16String);
+$.CGEventKeyboardSetUnicodeString(up, s.length, s.UTF16String);
+$.CGEventPost(0, down);
+$.CGEventPost(0, up);`;
+}
+
+/** Click with CGEventCreateMouseEvent. `double` posts two clicks. */
+export function macClickScript(body) {
+  const x = Math.round(Number(body?.x) || 0);
+  const y = Math.round(Number(body?.y) || 0);
+  const n = body?.double ? 2 : 1;
+  const down = body?.button === "right" ? 3 : 1;
+  const up = body?.button === "right" ? 4 : 2;
+  return `ObjC.import("CoreGraphics");
+const src = $.CGEventSourceCreate(1);
+const p = $.CGPointMake(${x}, ${y});
+for (let i = 0; i < ${n}; i++) {
+  const down = $.CGEventCreateMouseEvent(src, ${down}, p, 0);
+  const up = $.CGEventCreateMouseEvent(src, ${up}, p, 0);
+  $.CGEventPost(0, down);
+  $.CGEventPost(0, up);
+}`;
 }
 
 /**
@@ -272,13 +315,21 @@ function run(cmd, args, opts = {}) {
     child.stdout.on("data", (c) => (stdout += c));
     child.stderr.on("data", (c) => (stderr += c));
     let settled = false;
+    let timer;
     const finish = (code, err) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       const out = { stdout, stderr: err || stderr, code };
       if (opts.allowFail || code === 0) resolve(out);
       else reject(new Error((err || stderr).trim() || `${cmd} exited ${code}`));
     };
+    if (opts.timeoutMs) {
+      timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        finish(1, `${cmd} timed out`);
+      }, opts.timeoutMs);
+    }
     child.on("error", (e) => finish(1, e.message));
     child.on("close", (code) => finish(code ?? 1));
   });

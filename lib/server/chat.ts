@@ -5,7 +5,7 @@ import { accessOf, adminAccess, appsLevelOf, levelOf, permits, type AccessLevel,
 import { setting } from "./models";
 import { trackServerEvent } from "./analytics";
 import { fullAccessOn } from "./full-access";
-import { isSecret, learn, memoryBlock, memoryOn, recall, rememberMessage, saveToMemory, scopeOf, wsOf } from "./memory";
+import { isSecret, learn, memoryBlock, memoryOn, recall, rememberAfterReply, rememberMessage, saveToMemory, scopeOf, wsOf } from "./memory";
 import { APP_TOOLS, findAppActions, runAppAction } from "./composio";
 import { askForKey, askForKeyTool, callApi, callApiTool, keyProvider, usableKeys } from "./keys";
 import { changeFiles, changeFilesTool } from "./repo-change";
@@ -19,7 +19,7 @@ import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { openaiClient } from "./openai-client";
 import { answerRoute } from "@/lib/local/responses";
 import { localOnly } from "@/lib/local/mode";
-import { chatStage, isSimpleLocalChat, stripImitatedDeeds } from "@/lib/local/fast-chat";
+import { chatStage, isSimpleLocalChat, stripImitatedDeeds, taskFromPromise } from "@/lib/local/fast-chat";
 import { contactLine, createBot, namesTheUser } from "./bots";
 import { creditsOut, noteOutOfCredit, outOfCreditWords } from "./cloud";
 import { noOwnComputer } from "./plan";
@@ -2064,6 +2064,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       });
       chatStage("simple-model", turnAt, `role=${role} prompt=${recent.reduce((n, m) => n + m.content.length, 0)}`);
       const text = result.content.trim() || "The local model returned an empty reply.";
+      rememberAfterReply(scopeOf(botId), chatId, askedText);
       addMessage({
         chatId,
         role: "bot",
@@ -2533,10 +2534,19 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     const about = bg ? bg.goal : lastWords(chatId);
     const memoryPromise = member
       ? Promise.resolve("")
-      : needsMemory(about).then(async (search) => {
-          chatStage("memory", turnAt);
-          return memoryBlock(scopeOf(botId), about, localOnly() ? 800 : 2500, { search });
-        });
+      : localOnly()
+        ? (async () => {
+            const t = Date.now();
+            const block = await memoryBlock(scopeOf(botId), about, 800, { search: false });
+            chatStage("memory-search", t, "card");
+            return block;
+          })()
+        : needsMemory(about).then(async (search) => {
+            const t = Date.now();
+            const block = await memoryBlock(scopeOf(botId), about, 2500, { search });
+            chatStage("memory-search", t, search ? "search" : "card");
+            return block;
+          });
     const now = [
       localOnly() ? "Do not write a line like [What was done: ...]. That note is not how work starts. Call start_task to start a task." : "",
       ...nowLines(b),
@@ -3199,11 +3209,15 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     let spoken = response.output_text ?? "";
     if (localOnly()) {
       const imitated = stripImitatedDeeds(spoken);
-      if (imitated.claimedTask && !sessionIds.length && !bg) {
-        const goal = lastWords(chatId);
-        sessionIds.push(startSession({ botId, goal, title: imitated.claimedTask, chatId, sentVia: "you", where: "auto" }).id);
-      }
       spoken = imitated.text;
+      if (!sessionIds.length && !bg) {
+        const asked = lastWords(chatId);
+        const plan = imitated.claimedTask
+          ? { title: imitated.claimedTask, goal: asked }
+          : taskFromPromise(asked, spoken, false);
+        if (plan) sessionIds.push(startSession({ botId, goal: plan.goal, title: plan.title, chatId, sentVia: "you", where: "auto" }).id);
+      }
+      rememberAfterReply(scopeOf(botId), chatId, lastWords(chatId));
     }
     const tidy = tidyAnswer(spoken);
     const text = tidy.text.trim();

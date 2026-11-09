@@ -4,7 +4,7 @@
  */
 import { localOrgoCall } from "./orgo-adapter";
 import { loadConfig, localOnly } from "./mode";
-import { runComputerUseLoop, type ComputerAction } from "./computer-use";
+import { ACTION_TYPES, runComputerUseLoop, type ComputerAction } from "./computer-use";
 
 type Worker = { id: string; url: string; token?: string };
 
@@ -22,27 +22,73 @@ export function screenResetPlan(local = localOnly()): { shell: string | null } {
   return { shell: local ? null : "/usr/local/bin/bops-reset-screen" };
 }
 
-/** One action as a worker request. Screenshot and wait are not shell commands. */
-export function workerAction(action: ComputerAction): { path: string; body: Record<string, unknown> } | null {
-  if (action.type === "click" || action.type === "double_click") return { path: "/click", body: { x: action.x, y: action.y, double: action.type === "double_click", button: action.button } };
-  if (action.type === "type") return { path: "/type", body: { text: action.text ?? "" } };
-  if (action.type === "keypress" || action.type === "key") return { path: "/key", body: { keys: action.keys ?? [], key: (action.keys ?? []).join("+") } };
-  if (action.type === "scroll") return { path: "/scroll", body: { x: action.x, y: action.y, scroll_x: action.scroll_x, scroll_y: action.scroll_y } };
-  if (action.type === "move") return { path: "/move", body: { x: action.x, y: action.y } };
-  if (action.type === "drag") {
-    const last = action.path?.at(-1);
-    return last ? { path: "/move", body: { x: last.x, y: last.y } } : null;
+const ACTION_ALIASES: Record<string, (typeof ACTION_TYPES)[number]> = {
+  click: "click",
+  left_click: "click",
+  leftclick: "click",
+  mouse_click: "click",
+  right_click: "click",
+  rightclick: "click",
+  double_click: "double_click",
+  doubleclick: "double_click",
+  double: "double_click",
+  move: "move",
+  mouse_move: "move",
+  mousemove: "move",
+  move_mouse: "move",
+  movemouse: "move",
+  pointer_move: "move",
+  type: "type",
+  type_text: "type",
+  typetext: "type",
+  write: "type",
+  key: "key",
+  keypress: "key",
+  key_press: "key",
+  hotkey: "key",
+  press_key: "key",
+  scroll: "scroll",
+  drag: "drag",
+  wait: "wait",
+  screenshot: "screenshot",
+};
+
+/** Map a model's action name onto a worker action. Unknown names are an error, not a silent no-op. */
+export function normalizeAction(action: ComputerAction): { action: ComputerAction } | { error: string } {
+  const raw = String(action.type || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const type = ACTION_ALIASES[raw];
+  if (!type) return { error: `Unknown action "${action.type || ""}". Allowed: ${ACTION_TYPES.join(", ")}.` };
+  const button = raw === "right_click" || raw === "rightclick" ? "right" : action.button;
+  return { action: { ...action, type, button } };
+}
+
+/** One action as a worker request. Screenshot and wait are not sent to the worker. */
+export function workerAction(action: ComputerAction): { path: string; body: Record<string, unknown> } | { error: string } | null {
+  const normalized = normalizeAction(action);
+  if ("error" in normalized) return normalized;
+  const next = normalized.action;
+  if (next.type === "wait" || next.type === "screenshot") return null;
+  if (next.type === "click" || next.type === "double_click") return { path: "/click", body: { x: next.x, y: next.y, double: next.type === "double_click", button: next.button } };
+  if (next.type === "type") return { path: "/type", body: { text: next.text ?? "" } };
+  if (next.type === "key") return { path: "/key", body: { keys: next.keys ?? [], key: (next.keys ?? []).join("+") } };
+  if (next.type === "scroll") return { path: "/scroll", body: { x: next.x, y: next.y, scroll_x: next.scroll_x, scroll_y: next.scroll_y } };
+  if (next.type === "move") return { path: "/move", body: { x: next.x, y: next.y } };
+  if (next.type === "drag") {
+    const last = next.path?.at(-1);
+    return last ? { path: "/move", body: { x: last.x, y: last.y } } : { error: `Unknown action "drag" without a path. Allowed: ${ACTION_TYPES.join(", ")}.` };
   }
-  return null;
+  return { error: `Unknown action "${action.type}". Allowed: ${ACTION_TYPES.join(", ")}.` };
 }
 
 /** A thread step for one worker action, in the same words the screen tools use. */
 export function actionStep(action: ComputerAction): { tool: string; detail: string } {
-  const at = `(${Math.round(Number(action.x) || 0)}, ${Math.round(Number(action.y) || 0)})`;
-  switch (action.type) {
+  const normalized = normalizeAction(action);
+  const next = "error" in normalized ? action : normalized.action;
+  const at = `(${Math.round(Number(next.x) || 0)}, ${Math.round(Number(next.y) || 0)})`;
+  switch (next.type) {
     case "click":
     case "double_click":
-      return { tool: "click", detail: action.type === "double_click" ? `double-clicked ${at}` : `clicked ${at}` };
+      return { tool: "click", detail: next.type === "double_click" ? `double-clicked ${at}` : `clicked ${at}` };
     case "type":
       return { tool: "type_text", detail: `typed "${(action.text ?? "").slice(0, 60)}"` };
     case "keypress":
@@ -54,7 +100,7 @@ export function actionStep(action: ComputerAction): { tool: string; detail: stri
     case "drag":
       return { tool: "move", detail: `moved the pointer ${at}` };
     default:
-      return { tool: action.type || "screenshot", detail: "looked at the screen" };
+      return { tool: "note", detail: `could not run ${action.type || "that action"}` };
   }
 }
 
@@ -62,6 +108,7 @@ export function actionStep(action: ComputerAction): { tool: string; detail: stri
 export async function actOnLocalComputer(computerId: string, action: ComputerAction): Promise<void> {
   const req = workerAction(action);
   if (!req) return;
+  if ("error" in req) throw new Error(req.error);
   await localOrgoCall("POST", `/computers/${encodeURIComponent(computerId)}${req.path}`, req.body);
 }
 
@@ -83,10 +130,17 @@ export async function localComputerTurn(sessionId: string, goal: string, fetchIm
       return { mime: res.headers.get("content-type") || "image/png", base64: bytes.toString("base64") };
     },
     act: async (actions) => {
+      const notes: string[] = [];
       for (const action of actions) {
-        await actOne(post, action);
-        onStep?.(action);
+        const req = workerAction(action);
+        if (req && "error" in req) notes.push(req.error);
+        else if (req) {
+          await post(req.path, req.body);
+          const normalized = normalizeAction(action);
+          if ("action" in normalized) onStep?.(normalized.action);
+        }
       }
+      if (notes.length) return notes.join(" ");
       return actions.map((a) => a.type).join(", ") || "looked";
     },
     fetchImpl,
@@ -95,10 +149,3 @@ export async function localComputerTurn(sessionId: string, goal: string, fetchIm
   return result.text;
 }
 
-async function actOne(post: (path: string, body: unknown) => Promise<void>, action: ComputerAction) {
-  if (action.type === "click" || action.type === "double_click") await post("/click", { x: action.x, y: action.y, double: action.type === "double_click" });
-  else if (action.type === "type") await post("/type", { text: action.text ?? "" });
-  else if (action.type === "keypress" || action.type === "key") await post("/key", { keys: action.keys ?? [], key: (action.keys ?? []).join("+") });
-  else if (action.type === "scroll") await post("/scroll", { x: action.x, y: action.y, scroll_x: action.scroll_x, scroll_y: action.scroll_y });
-  else if (action.type === "move") await post("/move", { x: action.x, y: action.y });
-}

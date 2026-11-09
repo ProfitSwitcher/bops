@@ -9,7 +9,7 @@ export function isSimpleLocalChat(text: string | undefined, extras: { images?: b
   if (extras.images || extras.files || extras.thread) return false;
   const t = (text ?? "").trim();
   if (!t || t.length > 240) return false;
-  if (TASKISH.test(t)) return false;
+  if (TASKISH.test(t) || localNeedsMemory(t)) return false;
   return true;
 }
 
@@ -24,6 +24,26 @@ const IMITATED_DEED = /\[What was done:([^\]]*)\]/g;
  * A model that copies a history note like `[What was done: started the task "..."]` did not call start_task.
  * The note comes off the reply. `claimedTask` is the title it pretended to start.
  */
+/** The user asked for a task, or the reply promises computer work, and no tool was called. */
+export function asksForTask(text: string): boolean {
+  return /\b(start (?:another |a )?task|use start_task)\b/i.test(text);
+}
+
+export function claimsWork(text: string): boolean {
+  return /\b(moving the pointer|taking a screenshot|screenshot now|i(?:'|’)ll (?:click|move|open|type|start)|clicking)\b/i.test(text);
+}
+
+/**
+ * A reply that promises work without a tool call. A finished thread already in `history` does not count as this task.
+ */
+export function taskFromPromise(user: string, reply: string, calledTool: boolean, history = ""): { title: string; goal: string } | null {
+  void history;
+  if (calledTool) return null;
+  if (!asksForTask(user) && !claimsWork(reply)) return null;
+  const title = user.replace(/\s+/g, " ").trim().slice(0, 80) || "Task";
+  return { title, goal: user };
+}
+
 export function stripImitatedDeeds(text: string): { text: string; claimedTask?: string } {
   let claimedTask: string | undefined;
   for (const match of text.matchAll(IMITATED_DEED)) {

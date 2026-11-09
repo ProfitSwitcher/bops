@@ -4,6 +4,8 @@
  */
 import { chat, type ToolDef } from "./provider";
 
+export const ACTION_TYPES = ["click", "double_click", "move", "type", "key", "scroll", "drag", "wait", "screenshot"] as const;
+
 export type ComputerAction = {
   type: string;
   x?: number;
@@ -20,10 +22,36 @@ const TOOL: ToolDef = {
   type: "function",
   function: {
     name: "computer",
-    description: "Actions on the current screenshot. When the goal is finished, set done true in this same call, together with the final action if one is still needed.",
-    parameters: { type: "object", properties: { actions: { type: "array" }, done: { type: "boolean" } } },
+    description: `Actions on the current screenshot. type is one of: ${ACTION_TYPES.join(", ")}. When the goal is finished, set done true in this same call and write the answer the user asked for in the message (what is on screen), not only the word Done.`,
+    parameters: {
+      type: "object",
+      properties: {
+        actions: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              type: { type: "string", enum: [...ACTION_TYPES] },
+              x: { type: "number" },
+              y: { type: "number" },
+              text: { type: "string" },
+              keys: { type: "array", items: { type: "string" } },
+            },
+            required: ["type"],
+          },
+        },
+        done: { type: "boolean" },
+      },
+    },
   },
 };
+
+function resultText(content: string, notes: string[], goal: string): string {
+  const said = content.trim();
+  if (said && !/^done\.?$/i.test(said)) return said;
+  if (notes.length) return `${notes.join("; ")}.`;
+  return `I couldn't answer "${goal.slice(0, 160)}" from the screen.`;
+}
 
 export function computerMaxSteps(): number {
   const n = Number(process.env.BOPS_COMPUTER_MAX_STEPS);
@@ -56,8 +84,7 @@ export async function runComputerUseLoop(opts: {
         messages: [
           {
             role: "system",
-            content:
-              "You control a computer from screenshots. Call computer with the next actions. When the goal is finished, set done true in that same call, including the final action if one is still needed. Do not repeat an action that already ran. Coordinates are pixels of the screenshot.",
+            content: `You control a computer from screenshots. Call computer with the next actions. type must be one of: ${ACTION_TYPES.join(", ")}. mouse_move is move, left_click is click. When the goal is finished, set done true in that same call, including the final action if one is still needed, and write the result the user asked for (what is on screen, which app is frontmost). Do not answer with only Done. Do not repeat an action that already ran. Coordinates are pixels of the screenshot.`,
           },
           {
             role: "user",
@@ -85,14 +112,15 @@ export async function runComputerUseLoop(opts: {
     } catch {
       return { text: "The vision model returned an action that wasn't valid JSON.", steps: step, degraded: "bad action json" };
     }
-    if (!actions.length) return { text: result.content || "Done.", steps: step, degraded };
+    if (!actions.length) return { text: resultText(result.content, notes, opts.goal), steps: step, degraded };
     const signature = JSON.stringify(actions);
-    if (signature === last) return { text: result.content || "Stopped: the same action repeated.", steps: step - 1, degraded: "repeated action" };
+    if (signature === last) return { text: "Stopped: the same action repeated.", steps: step - 1, degraded: "repeated action" };
     last = signature;
     const note = await opts.act(actions);
-    for (const action of actions) opts.onStep?.(action);
     notes.push(note);
-    if (done) return { text: result.content || "Done.", steps: step, degraded };
+    if (/Unknown action/.test(note)) continue;
+    for (const action of actions) opts.onStep?.(action);
+    if (done) return { text: resultText(result.content, notes, opts.goal), steps: step, degraded };
   }
   return { text: "Stopped after the maximum number of computer-use steps.", steps: max, degraded: "max steps" };
 }

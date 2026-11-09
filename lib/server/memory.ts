@@ -3,7 +3,8 @@ import { LIGHT } from "./routing";
 import { setting } from "./models";
 import { Honcho, Session as HonchoSessionRef, type Peer, type Session as HonchoSession } from "@honcho-ai/sdk";
 import { localOnly } from "@/lib/local/mode";
-import { isSimpleLocalChat } from "@/lib/local/fast-chat";
+import { chatStage, localNeedsMemory } from "@/lib/local/fast-chat";
+import { addFacts } from "@/lib/local/memory-store";
 import { localBank } from "@/lib/local/honcho-local";
 import { openaiClient } from "./openai-client";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -503,8 +504,8 @@ export function rememberMessage(ws: Where, chatId: string, messageId: string, sa
     saveToMemory(ws, "chat", chatId, [{ who: memberWho(member), text: said }], metadata);
     return;
   }
-  // A short local line is stored as said. It does not wait on a label model or a fact extraction.
-  if (localOnly() && isSimpleLocalChat(said)) {
+  // Local mode stores the line now. Fact writing waits until the reply is posted (rememberAfterReply), on the fast model.
+  if (localOnly()) {
     saveToMemory(ws, "chat", chatId, [{ who: OWNER_WHO, text: said }], metadata);
     return;
   }
@@ -546,6 +547,38 @@ export function rememberMessage(ws: Where, chatId: string, messageId: string, sa
       .slice(0, 3);
     for (const f of facts) if (ours()) await learn(ws, f, chatId, { auto: true });
   })().catch((e: Error) => console.warn(`[memory] auto-remember: ${e.message}`));
+}
+
+/**
+ * After the reply is already on screen: a fast-model pass that writes lasting facts.
+ * It does not run before the reply, so it does not compete with the planner.
+ */
+export function rememberAfterReply(where: Where, chatId: string, said: string) {
+  if (!localOnly() || !on() || !said.trim()) return;
+  const started = Date.now();
+  void (async () => {
+    const judge = localNeedsMemory(said);
+    chatStage("memory-judge", started, judge ? "yes" : "no");
+    if (!judge) return;
+    const writeAt = Date.now();
+    const { chat } = await import("@/lib/local/provider");
+    const result = await chat({
+      role: "fast",
+      messages: [
+        { role: "system", content: "Write each lasting fact as one short sentence. One per line, at most three. If there is no lasting fact, write NONE." },
+        { role: "user", content: said.slice(0, 1500) },
+      ],
+    });
+    chatStage("memory-facts", writeAt, `chars=${result.content.length}`);
+    const facts = result.content
+      .split("\n")
+      .map((l) => l.replace(/^[-*•\d.)\s]+/, "").trim())
+      .filter((l) => l && l !== "NONE" && l.length < 400)
+      .slice(0, 3);
+    if (!facts.length) return;
+    const bank = bindingOf(scopeIn(where)).bank;
+    await addFacts(bank, facts.map((content) => ({ content, sessionId: `bops-chat-${chatId}` })));
+  })().catch((e: Error) => console.warn(`[memory] after reply: ${e.message}`));
 }
 
 /** Take back a fact the chat said was remembered, or forget the older fact it replaced. */

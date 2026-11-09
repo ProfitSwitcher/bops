@@ -34,14 +34,14 @@ const { clearHealth, withRole, checkEndpoint } = await import("../lib/local/endp
 const { chat, embed, looseToolCalls } = await import("../lib/local/provider.ts");
 const { localScreens, screensAdvanced, localOrgoCall, localOrgoAnswered, resetLocalComputersForTests, localComputerMissing } = await import("../lib/local/orgo-adapter.ts");
 const { localComputerTurn, screenResetPlan, workerAction } = await import("../lib/local/computer-session.ts");
-const { isSimpleLocalChat, localNeedsMemory, stripImitatedDeeds } = await import("../lib/local/fast-chat.ts");
+const { isSimpleLocalChat, localNeedsMemory, stripImitatedDeeds, taskFromPromise } = await import("../lib/local/fast-chat.ts");
 const { transcribeLocal } = await import("../lib/local/speech.ts");
 const { deleteSession, listFacts } = await import("../lib/local/memory-store.ts");
 const { runResponses, resetResponsesForTests } = await import("../lib/local/responses.ts");
 const { runComputerUseLoop } = await import("../lib/local/computer-use.ts");
 const { addFacts, searchFacts, closeMemoryForTests, memoryDb } = await import("../lib/local/memory-store.ts");
 const { installEgressGuard, LocalOnlyError, refusedConnections } = await import("../lib/local/egress.mjs");
-const { startWorker, refuseBind, macKeyScript, macPointerScript, bashBody } = await import("../workers/bops-local-worker.mjs");
+const { startWorker, refuseBind, macKeyScript, macPointerScript, macClickScript, macTypeScript, bashBody, OSA_TIMEOUT_MS } = await import("../workers/bops-local-worker.mjs");
 const { startProxy } = await import("../workers/bops-llm-proxy.mjs");
 
 let failed = 0;
@@ -316,7 +316,7 @@ await check("computer-use loop and the local worker", async () => {
     },
   });
   assert.equal(actions[0].type, "click");
-  assert.match(loop.text, /Done/);
+  assert.match(loop.text, /click/);
   vision.server.close();
   worker.server.close();
 });
@@ -407,21 +407,25 @@ await check("a later text question does not stay on the vision model or the earl
   models.server.close();
 });
 
-await check("mac keys are key codes, and move and scroll post core graphics events", async () => {
-  assert.match(macKeyScript("Return"), /key code 36$/);
-  assert.doesNotMatch(macKeyScript("Return"), /keystroke|Return/);
-  assert.match(macKeyScript("Tab"), /key code 48$/);
-  assert.match(macKeyScript("Escape"), /key code 53$/);
-  assert.match(macKeyScript("Delete"), /key code 51$/);
-  assert.match(macKeyScript("Left"), /key code 123$/);
-  assert.match(macKeyScript("Down"), /key code 125$/);
-  assert.match(macKeyScript("cmd+c"), /key code 8 using \{command down\}/);
-  assert.match(macKeyScript("ctrl+shift+Tab"), /key code 48 using \{control down, shift down\}/);
-  assert.match(macKeyScript("alt+Left"), /key code 123 using \{option down\}/);
-  assert.match(macKeyScript("shift+Return"), /key code 36 using \{shift down\}/);
-  assert.match(macKeyScript("cmd+ctrl+alt+shift+Escape"), /key code 53 using \{command down, control down, option down, shift down\}/);
-  assert.match(macKeyScript("a"), /key code 0$/);
-  assert.match(macKeyScript("/"), /keystroke "\/"/);
+await check("mac keys, clicks, and typing post core graphics events", async () => {
+  assert.match(macKeyScript("Return"), /CGEventCreateKeyboardEvent\(src, 36, true\)/);
+  assert.doesNotMatch(macKeyScript("Return"), /System Events|keystroke/);
+  assert.match(macKeyScript("Tab"), /CGEventCreateKeyboardEvent\(src, 48, true\)/);
+  assert.match(macKeyScript("Escape"), /CGEventCreateKeyboardEvent\(src, 53, true\)/);
+  assert.match(macKeyScript("Delete"), /CGEventCreateKeyboardEvent\(src, 51, true\)/);
+  assert.match(macKeyScript("Left"), /CGEventCreateKeyboardEvent\(src, 123, true\)/);
+  assert.match(macKeyScript("Down"), /CGEventCreateKeyboardEvent\(src, 125, true\)/);
+  assert.match(macKeyScript("cmd+c"), /CGEventCreateKeyboardEvent\(src, 8, true\)/);
+  assert.match(macKeyScript("cmd+c"), /1048576/);
+  assert.match(macKeyScript("ctrl+shift+Tab"), /CGEventCreateKeyboardEvent\(src, 48, true\)/);
+  assert.match(macKeyScript("alt+Left"), /CGEventCreateKeyboardEvent\(src, 123, true\)/);
+  assert.match(macKeyScript("shift+Return"), /CGEventCreateKeyboardEvent\(src, 36, true\)/);
+  assert.match(macKeyScript("cmd+ctrl+alt+shift+Escape"), /CGEventCreateKeyboardEvent\(src, 53, true\)/);
+  assert.match(macKeyScript("a"), /CGEventCreateKeyboardEvent\(src, 0, true\)/);
+  assert.match(macKeyScript("/"), /CGEventKeyboardSetUnicodeString/);
+  assert.doesNotMatch(macTypeScript("hi"), /System Events/);
+  assert.match(macClickScript({ x: 10, y: 20 }), /CGEventCreateMouseEvent/);
+  assert.doesNotMatch(macClickScript({ x: 1, y: 2, double: true }), /System Events/);
   assert.throws(() => macKeyScript("ReturnKey"), /Unknown key/);
   const move = macPointerScript("/move", { x: 12, y: 34 });
   assert.match(move, /CGEventCreateMouseEvent/);
@@ -519,7 +523,7 @@ await check("a local computer task talks to the worker, not an agents API", asyn
     workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
   });
   const text = await localComputerTurn("task-1", "take a screenshot");
-  assert.match(text, /Done/);
+  assert.match(text, /click/);
   assert.equal(sawSession, true);
   assert.equal(sawClick, true);
   assert.equal(seen.some((u) => String(u).includes("agents")), false);
@@ -538,7 +542,7 @@ await check("a local computer task records each step and never shells out to xdo
       choices: [
         {
           message: {
-            content: "Done.",
+            content: "Finder is the frontmost app.",
             tool_calls: [{ id: "c1", type: "function", function: { name: "computer", arguments: JSON.stringify({ done: true, actions: [{ type: "move", x: 640, y: 480 }] }) } }],
           },
         },
@@ -558,12 +562,46 @@ await check("a local computer task records each step and never shells out to xdo
       if (session.actions.some((a) => a.op === "bash" && /xdotool|DISPLAY=|\/usr\/local\/bin|\/root|\/opt\/bops/.test(JSON.stringify(a.body)))) bash = true;
     }
   });
-  assert.match(text, /Done/);
+  assert.match(text, /Finder is the frontmost app/);
   assert.equal(steps.length, 1);
   assert.equal(steps[0].type, "move");
   assert.equal(workerAction(steps[0]).path, "/move");
   assert.equal(bash, false);
   assert.equal(screenResetPlan().shell, null);
+  vision.server.close();
+  worker.server.close();
+});
+
+await check("mouse_move reaches the worker as /move", async () => {
+  clearHealth();
+  let moved = false;
+  const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "" });
+  const vision = await listen(async (req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "qwen3.8:27b-q8_0" }] });
+    json(res, {
+      choices: [
+        {
+          message: {
+            content: "The pointer is at the center.",
+            tool_calls: [{ id: "c1", type: "function", function: { name: "computer", arguments: JSON.stringify({ done: true, actions: [{ type: "mouse_move", x: 640, y: 480 }] }) } }],
+          },
+        },
+      ],
+    });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "v", baseUrl: `${vision.url}/v1`, provider: "ollama" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [{ endpoint: "v", model: "qwen3.8:27b-q8_0" }] }, embed: { chain: [] }, heavy: { chain: [] } },
+    },
+    workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
+  });
+  const text = await localComputerTurn("task-alias", "what app is frontmost", fetch, () => {
+    for (const session of worker.sessions.values()) if (session.actions.some((a) => a.op === "move" && a.body?.x === 640)) moved = true;
+  });
+  assert.equal(moved, true);
+  assert.match(text, /pointer is at the center/);
+  assert.equal(/^done\.?$/i.test(text), false);
   vision.server.close();
   worker.server.close();
 });
@@ -599,6 +637,15 @@ await check("a local screen reset does not write /usr/local/bin", async () => {
   assert.equal(stripped.text.includes("[What was done:"), false);
   assert.equal(localNeedsMemory("Start a task to take a screenshot"), false);
   assert.equal(localNeedsMemory("remember that I prefer tea"), true);
+  assert.equal(isSimpleLocalChat("Please remember for later: my shop truck is blue"), false);
+  const history = '[What was done: started the task "Screenshot and center mouse"]';
+  const user = "Start another task: move the pointer to (300, 200) and take a screenshot. (use start_task)";
+  const reply = "Moving the pointer to (300, 200) and taking a screenshot now.";
+  const plan = taskFromPromise(user, reply, false, history);
+  assert.ok(plan);
+  assert.match(plan.goal, /300, 200/);
+  assert.equal(taskFromPromise(user, reply, true, history), null);
+  assert.equal(OSA_TIMEOUT_MS <= 8000, true);
 });
 
 await check("bash on the worker returns exit_code instead of failing the request", async () => {
@@ -683,7 +730,7 @@ await check("a computer task finishes on the saved computer after a restart", as
       return actions.map((a) => a.type).join(", ");
     },
   });
-  assert.match(result.text, /Done/);
+  assert.match(result.text, /click/);
   const remote = made.id.slice("local_studio3_".length);
   const session = again.sessions.get(remote);
   assert.ok(session?.actions.some((a) => a.op === "click" && a.body?.x === 20));
