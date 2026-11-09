@@ -26,6 +26,7 @@ import { forgetScreens, listedScreenId, pageAt, sameComputer, screenEndpoint, sc
 import { saveFrame } from "./frames";
 import { namesSite, onASite } from "@/lib/task-sites";
 import { siteOf } from "@/lib/watch-sites";
+import { localOnly } from "@/lib/local/mode";
 import { ensureTailnet } from "./tailnet";
 import { applyDesktop } from "./desktop";
 import { computerBriefing } from "./briefing";
@@ -2901,6 +2902,7 @@ const browserReady = new Map<string, Promise<boolean>>();
  * page_script) next to the playwright-core it brings. True when they're there.
  */
 function ensureBrowserTool(computerId: string): Promise<boolean> {
+  if (localOnly()) return Promise.resolve(false);
   const known = browserReady.get(computerId);
   if (known) return known;
   const v = JSON.parse(readFileSync(join(process.cwd(), "node_modules/@playwright/mcp/package.json"), "utf8")).version as string;
@@ -2945,6 +2947,7 @@ const appsReach = new Map<string, boolean>();
  * next to the owner's (apps-<bot>.json; screen_mcp.py --bot picks it), so they reach its apps, not the owner's.
  */
 export async function ensureScreenTools(computerId: string, guest?: string) {
+  if ((await import("@/lib/local/mode")).localOnly()) return;
   const files: { dst: string; mode: string; body: Buffer }[] = SCREEN_TOOLS.map(([src, dst, mode]) => ({ dst, mode, body: readFileSync(join(/*turbopackIgnore: true*/ process.cwd(), src)) }));
   // How the bot's threads reach its apps and business data: Bops on the tailnet, and the bot's own secret.
   // `apps` and `data` say which tools screen_mcp.py offers (a file without them is from before business data: apps only).
@@ -3071,6 +3074,9 @@ async function run(sessionId: string) {
           const x = state.bots.find((y) => y.id === c.id);
           if (x) x.wakeFailed = undefined;
         });
+      // Local mode drives the Mac worker. The tailnet, the /opt/bops screen ledger, and
+      // `bops-screens claim` are cloud-computer setup and are not run here.
+      if (!localOnly()) {
       await ensureTailnet(c).catch(() => null);
       // The computer's screen ledger: drop stale claims, then take this thread's screen.
       await ensureScreenTools(computerId, b.id);
@@ -3098,6 +3104,7 @@ async function run(sessionId: string) {
         // Another agent got there first (Bops hadn't heard yet): wait for the next free screen, quietly.
         if (why.includes("is taken by")) throw new ScreenTaken();
         throw new Error(`my computer isn't ready (${why})`);
+      }
       }
     }
     // A screen of the bot's computer is watched for what only the user can get past (a Mac task's Chrome isn't one).

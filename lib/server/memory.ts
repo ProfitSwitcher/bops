@@ -3,6 +3,7 @@ import { LIGHT } from "./routing";
 import { setting } from "./models";
 import { Honcho, Session as HonchoSessionRef, type Peer, type Session as HonchoSession } from "@honcho-ai/sdk";
 import { localOnly } from "@/lib/local/mode";
+import { isSimpleLocalChat } from "@/lib/local/fast-chat";
 import { localBank } from "@/lib/local/honcho-local";
 import { openaiClient } from "./openai-client";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -500,6 +501,11 @@ export function rememberMessage(ws: Where, chatId: string, messageId: string, sa
   // nothing more. No fact is drawn from them: what they say about themselves is never a fact about the owner.
   if (member) {
     saveToMemory(ws, "chat", chatId, [{ who: memberWho(member), text: said }], metadata);
+    return;
+  }
+  // A short local line is stored as said. It does not wait on a label model or a fact extraction.
+  if (localOnly() && isSimpleLocalChat(said)) {
+    saveToMemory(ws, "chat", chatId, [{ who: OWNER_WHO, text: said }], metadata);
     return;
   }
   // The account whose message this is: a sign-out or another account's sign-in meanwhile, and nothing of it goes into the new one's memory.

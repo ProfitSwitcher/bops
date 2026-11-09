@@ -128,6 +128,10 @@ The key is stored in the macOS Keychain or Windows DPAPI (CurrentUser). If neith
 
 Model ids come from each provider's models endpoint (Test in Settings) or from the model field you type. The chat shows a **Cloud model** badge when the latest answer came from one of these providers.
 
+## Chat on this machine
+
+A short message (a greeting, a one-word reply) is answered with one planner call and a short prompt. Routing, memory search, and fact labeling are skipped for that turn. Longer messages still use the planner, with the last few turns of the chat. Set `BOPS_CHAT_TIMING=1` to log each stage in milliseconds (`[chat] route`, `[chat] memory`, `[chat] simple-model`).
+
 ## What is offline
 
 Settings shows the same list.

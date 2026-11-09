@@ -1,7 +1,7 @@
 // Local-only provider, routing, memory, worker, and the egress tripwire.
 // Usage: node --experimental-strip-types scripts/test-local.mjs
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
@@ -34,13 +34,14 @@ const { clearHealth, withRole, checkEndpoint } = await import("../lib/local/endp
 const { chat, embed, looseToolCalls } = await import("../lib/local/provider.ts");
 const { localScreens, screensAdvanced } = await import("../lib/local/orgo-adapter.ts");
 const { localComputerTurn } = await import("../lib/local/computer-session.ts");
+const { isSimpleLocalChat } = await import("../lib/local/fast-chat.ts");
 const { transcribeLocal } = await import("../lib/local/speech.ts");
 const { deleteSession, listFacts } = await import("../lib/local/memory-store.ts");
 const { runResponses, resetResponsesForTests } = await import("../lib/local/responses.ts");
 const { runComputerUseLoop } = await import("../lib/local/computer-use.ts");
 const { addFacts, searchFacts, closeMemoryForTests, memoryDb } = await import("../lib/local/memory-store.ts");
 const { installEgressGuard, LocalOnlyError, refusedConnections } = await import("../lib/local/egress.mjs");
-const { startWorker, refuseBind, macKeyScript, macPointerScript } = await import("../workers/bops-local-worker.mjs");
+const { startWorker, refuseBind, macKeyScript, macPointerScript, bashBody } = await import("../workers/bops-local-worker.mjs");
 const { startProxy } = await import("../workers/bops-llm-proxy.mjs");
 
 let failed = 0;
@@ -87,8 +88,7 @@ await check("local-only defaults on, and :cloud tags are refused", async () => {
 });
 
 await check("the example config is the model plan", async () => {
-  useConfig(null);
-  const cfg = loadConfig();
+  const cfg = parseConfig(readFileSync(new URL("../bops.local.example.json", import.meta.url), "utf8"), "bops.local.example.json");
   assert.equal(cfg.llm.roles.planner.chain[0].model, "ornith-1.5:122b");
   assert.equal(cfg.llm.roles.planner.chain[1].model, "qwen3.8-flash-next:125b-mlx");
   assert.equal(cfg.llm.roles.planner.chain[2].model, "qwen3.5:122b");
@@ -495,11 +495,21 @@ await check("local screens name their displays, and a stuck screen list stops", 
 await check("a local computer task talks to the worker, not an agents API", async () => {
   clearHealth();
   const seen = [];
+  let asked = 0;
+  let sawSession = false;
+  let sawClick = false;
   const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "" });
   const vision = await listen(async (req, res) => {
     seen.push(req.url);
     if (req.url === "/api/tags") return json(res, { models: [{ name: "qwen3.8:27b-q8_0" }] });
-    json(res, { choices: [{ message: { content: "Done.", tool_calls: [{ id: "c", type: "function", function: { name: "computer", arguments: JSON.stringify({ done: true, actions: [] }) } }] } }] });
+    asked += 1;
+    const live = [...worker.sessions.values()];
+    if (live.length) sawSession = true;
+    if (live.some((s) => s.actions.some((a) => a.op === "click" && a.body?.x === 12))) sawClick = true;
+    if (asked === 1) {
+      return json(res, { choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "computer", arguments: JSON.stringify({ actions: [{ type: "click", x: 12, y: 34 }] }) } }] } }] });
+    }
+    json(res, { choices: [{ message: { content: "Done.", tool_calls: [{ id: "c2", type: "function", function: { name: "computer", arguments: JSON.stringify({ done: true, actions: [] }) } }] } }] });
   });
   useConfig({
     llm: {
@@ -510,9 +520,36 @@ await check("a local computer task talks to the worker, not an agents API", asyn
   });
   const text = await localComputerTurn("task-1", "take a screenshot");
   assert.match(text, /Done/);
+  assert.equal(sawSession, true);
+  assert.equal(sawClick, true);
   assert.equal(seen.some((u) => String(u).includes("agents")), false);
   vision.server.close();
   worker.server.close();
+});
+
+await check("bash on the worker returns exit_code instead of failing the request", async () => {
+  assert.equal(bashBody(1, "", "no such file").exit_code, 1);
+  const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "native", token: "" });
+  const made = await fetch(`http://127.0.0.1:${worker.port}/v1/sessions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const { id } = await made.json();
+  const res = await fetch(`http://127.0.0.1:${worker.port}/v1/sessions/${id}/bash`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ command: "echo hello; exit 1" }),
+  });
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.equal(body.exit_code, 1);
+  assert.match(body.output, /hello/);
+  worker.server.close();
+});
+
+await check("a short local chat skips the router and memory models", async () => {
+  assert.equal(isSimpleLocalChat("hi"), true);
+  assert.equal(isSimpleLocalChat("pong"), true);
+  assert.equal(isSimpleLocalChat("search the web for the weather"), false);
+  assert.equal(isSimpleLocalChat("hi", { images: true }), false);
+  assert.equal(isSimpleLocalChat("x".repeat(241)), false);
 });
 
 await check("local speech uses the configured server and never a cloud host", async () => {

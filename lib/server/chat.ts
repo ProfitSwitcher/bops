@@ -18,6 +18,8 @@ import { ORBIT_OWNER_ONLY, ORBIT_TOOL_NAMES, ORBIT_TOOLS, orbitNote, orbitNowLin
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { openaiClient } from "./openai-client";
 import { answerRoute } from "@/lib/local/responses";
+import { localOnly } from "@/lib/local/mode";
+import { chatStage, isSimpleLocalChat } from "@/lib/local/fast-chat";
 import { contactLine, createBot, namesTheUser } from "./bots";
 import { creditsOut, noteOutOfCredit, outOfCreditWords } from "./cloud";
 import { noOwnComputer } from "./plan";
@@ -898,6 +900,7 @@ async function continueThread(chatId: string, text: string, replyTo?: string, me
   const ours = sameState();
   const threads = followUpThreads(chatId, member);
   if (!threads.length) return false;
+  if (localOnly() && isSimpleLocalChat(text)) return false;
   // Where apps on the web are open: work on one is the chat's to start (work_on_app), as only a thread on that app
   // (Session.app) has its working folder, so Jev is told which app each thread is on. "Work on the app recipe-box"
   // right after a plain task about it that couldn't (it had no folder) went to that task, which can't call work_on_app.
@@ -1978,6 +1981,8 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
   // A turn someone else started: who it came from, for what it passes on and starts (sessions.ts StartOptions.outside).
   const outsideFrom = opts.outside ? (opts.from ?? "someone outside Bops") : undefined;
   if (!bg) setTyping(chatId, botId, true);
+  let simpleLocal = false;
+  const turnAt = Date.now();
   try {
     // Its teammates: the ones it may ask on the team chart (lib/chain.ts: everyone, without one), and on a member's
     // turn only the ones they see (Read or Write) too. A bot it may not ask, or not given them, stays hidden: in what
@@ -2027,8 +2032,56 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     const botEffort = b.effort;
     const effortFloor = botEffort === "high" ? "high" : CHAT_REASONING.effort;
     const base: Config = { model: CHAT_MODEL, effort: effortFloor };
+    const askedText = (answeringMessage?.text ?? lastAsk?.text ?? "").trim();
+    const usersHere = getState().messages.filter((m) => m.chatId === chatId && m.role === "user");
+    const askedAt = usersHere.findIndex((m) => m.id === (answeringMessage?.id ?? lastAsk?.id));
+    const prevUser = askedAt > 0 ? usersHere[askedAt - 1] : undefined;
+    const imageFollowUp = !!prevUser?.images?.length && !!lastAsk && lastAsk.at - prevUser.at < 15 * 60 * 1000;
+    simpleLocal =
+      !bg &&
+      !opts.outside &&
+      !opts.resume &&
+      !opts.group?.length &&
+      !member &&
+      localOnly() &&
+      isSimpleLocalChat(askedText, {
+        images: !!(answeringMessage?.images?.length || lastAsk?.images?.length || imageFollowUp),
+        files: !!(answeringMessage?.files?.length || lastAsk?.files?.length),
+        thread: !!(answeringMessage?.replyTo || lastAsk?.replyTo),
+      });
+    if (simpleLocal) {
+      chatStage("simple-start", turnAt, `chars=${askedText.length}`);
+      const { chat } = await import("@/lib/local/provider");
+      const recent = getState()
+        .messages.filter((m) => m.chatId === chatId && (m.role === "user" || m.role === "bot") && m.text.trim() && !m.secret)
+        .slice(-6)
+        .map((m) => ({ role: (m.role === "bot" ? "assistant" : "user") as "assistant" | "user", content: m.text.slice(0, 600) }));
+      const role = effortFloor === "high" ? ("heavy" as const) : ("planner" as const);
+      const result = await chat({
+        role,
+        messages: [{ role: "system", content: `You are ${b.name}, a local assistant on this Mac. Reply in one or two short sentences.` }, ...recent],
+      });
+      chatStage("simple-model", turnAt, `role=${role} prompt=${recent.reduce((n, m) => n + m.content.length, 0)}`);
+      const text = result.content.trim() || "The local model returned an empty reply.";
+      addMessage({
+        chatId,
+        role: "bot",
+        botId,
+        text,
+        replyTo: answeringMessage ? answeringMessage.replyTo : opts.replyTo,
+        model: { id: result.model, endpoint: result.endpoint, ...(result.cloud ? { cloud: true } : {}) },
+      });
+      return { text };
+    }
     // How much thinking the message needs (routing.ts routeChat: Jev, alongside what's below). Only the user's own.
-    const routing = waiting ? routeChat(base, lastWords(chatId), botId).catch(() => ({ config: base })) : Promise.resolve({ config: base });
+    const routing = waiting
+      ? routeChat(base, lastWords(chatId), botId)
+          .then((r) => {
+            chatStage("route", turnAt);
+            return r;
+          })
+          .catch(() => ({ config: base }))
+      : Promise.resolve({ config: base });
     // Whether a new bot could have a computer of its own on the user's Orgo plan, so the main bot doesn't promise one.
     // Read quickly or not at all: createBot checks again anyway. Not asked when the bots work on this Mac.
     const noOwnRoom =
@@ -2477,6 +2530,12 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       .join("\n");
     // What memory is searched for: the user's latest words, or a routine's job.
     const about = bg ? bg.goal : lastWords(chatId);
+    const memoryPromise = member
+      ? Promise.resolve("")
+      : needsMemory(about).then(async (search) => {
+          chatStage("memory", turnAt);
+          return memoryBlock(scopeOf(botId), about, localOnly() ? 800 : 2500, { search });
+        });
     const now = [
       ...nowLines(b),
       // (On a member's turn, another bot's work on a shared screen is named only when they see that bot.)
@@ -2535,7 +2594,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       // What's known about the user (Honcho), for what they just said (or what the routine is about).
       // Searched only when knowing the user helps with it (Jev); small talk and plain commands skip it.
       // Not on a member's turn: what's known about the owner is the owner's own (NOT_FROM_MEMBER has no recall either).
-      member ? "" : await memoryBlock(scopeOf(botId), about, 2500, { search: await needsMemory(about) }),
+      await memoryPromise,
     ].filter(Boolean);
     // Going on from a pause for the user's OK: the same turn, on the response it paused in, with what it had then.
     const resumed = opts.resume?.resume?.engine === "chat" ? opts.resume.resume : undefined;
@@ -2844,13 +2903,16 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
         notes.push(key ? `${key.label} key ${/^Change /.test(opts.resume.action) ? "unchanged" : "not added"}${opts.resume.reply.message ? `: ${why}` : ""}` : `${b.name} didn't do it: ${why}`);
       }
       response = await create([...resumed.outputs.map((o) => ({ type: "function_call_output" as const, call_id: o.callId, output: o.output })), { type: "function_call_output" as const, call_id: resumed.callId, output: out }], resumed.responseId);
-    } else
+    } else {
+      const prior = history(chatId, botId, { unattended: !!bg, noApps: !!member && !apps, thread: answeringMessage?.replyTo });
       response = await create([
-        ...history(chatId, botId, { unattended: !!bg, noApps: !!member && !apps, thread: answeringMessage?.replyTo }),
+        ...(localOnly() ? prior.slice(-8) : prior),
         { role: "developer" as const, content: `As of now (from Bops, not ${owner}):\n${now.join("\n")}` },
         // A routine's run: the job, last, as a note from Bops.
         ...(bg ? [{ role: "developer" as const, content: jobNote(b, bg, offered.has("draft_reply")) }] : []),
       ]);
+      chatStage("model", turnAt);
+    }
     stillOurs(ours);
     recordTokens("chat", response.model, response.usage, botId);
     sawWeb(response.output);
@@ -3214,7 +3276,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     // Still drawing a picture: it keeps typing until that's in (drawFor).
     if (!bg && ours() && !drawing.get(`${chatId} ${botId}`)) setTyping(chatId, botId, false);
     // What fell out of what it reads whole goes into the chat's summary, after the turn (chat-summary.ts).
-    if (ours()) void foldChat(chatId, botId);
+    if (ours() && !simpleLocal) void foldChat(chatId, botId);
   }
 }
 

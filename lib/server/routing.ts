@@ -197,6 +197,8 @@ export const ASKS_AGAIN = /\b(try again|that'?s (wrong|not right|incorrect)|not 
 export async function routeChat(base: Config, words: string, botId?: string): Promise<{ config: Config; router?: Config & { tier: Tier; why: string } }> {
   const mode = routerMode();
   if (mode === "off" || !words.trim()) return { config: base };
+  // A short local message stays on the chat's own model. The fast model is not asked first.
+  if ((await import("@/lib/local/mode")).localOnly() && words.trim().length < 500 && !ASKS_AGAIN.test(words)) return { config: base };
   const a = await decide(
     { message: words },
     {

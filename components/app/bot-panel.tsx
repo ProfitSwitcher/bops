@@ -15,6 +15,7 @@ import { BotKeys } from "./keys";
 import { AgentChip, AgentMark } from "./agent-marks";
 import { BotAiSection } from "./bot-ai";
 import { ComputerSummary } from "./computer";
+import { useLocalOnly } from "./local-mode";
 import { Mascot } from "./mascot";
 import { PlanNote, usePlan } from "./plan-note";
 import { KeyIcon } from "./screen-cards";
@@ -237,6 +238,7 @@ function Details({
   const glass = GLASS;
   const running = state.sessions.filter((s) => s.botId === b.id && live(s)).length;
   const [copied, setCopied] = useState(false);
+  const local = useLocalOnly();
   const share = async () => {
     await navigator.clipboard.writeText([`${b.name} (${b.role}, Bops)`, b.phone, b.email].filter(Boolean).join("\n"));
     setCopied(true);
@@ -306,7 +308,7 @@ function Details({
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="text-[13px] font-semibold leading-4">Works on</span>
           <span className="text-[12px] leading-4 text-[#6B6B6B]">
-            {(b.runsOn ?? "auto") === "auto" ? `Its cloud computer, or ${yourMac(state)} when a task needs it` : b.runsOn === "mac" ? `${Your(state)} Mac, always` : "Its cloud computer, always"}
+            {local ? "The local worker on this Mac" : (b.runsOn ?? "auto") === "auto" ? `Its cloud computer, or ${yourMac(state)} when a task needs it` : b.runsOn === "mac" ? `${Your(state)} Mac, always` : "Its cloud computer, always"}
           </span>
         </div>
         <div className="flex shrink-0 gap-0.5 rounded-full bg-black/[0.05] p-[3px]">
@@ -506,6 +508,7 @@ export function ComputerChoice({ state, bot: b, className, onUpgrade }: { state:
   const [sure, setSure] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const local = useLocalOnly();
   const shared = sharesComputer(b);
   const main = workBot({ ...b, computer: "shared" }, state.bots);
   const plan = usePlan(state);
@@ -528,7 +531,9 @@ export function ComputerChoice({ state, bot: b, className, onUpgrade }: { state:
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="text-[13px] font-semibold leading-4">Computer</span>
           <span className="text-[12px] leading-4 text-[#6B6B6B]">
-            {b.isMain
+            {local
+              ? "The local worker on this Mac"
+              : b.isMain
               ? `Works on ${your(state)} free Bops computer, which ${main.name} has, with ${b.name}'s team`
               : shared
                 ? `Works on ${main.name}'s computer, on screens no one else is using`

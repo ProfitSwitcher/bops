@@ -180,6 +180,8 @@ const b64 = (s: string | Buffer) => Buffer.from(s).toString("base64");
  */
 export async function applyDesktop(b: Bot, { restartChrome = true }: { restartChrome?: boolean } = {}) {
   if (!b.computerId) return;
+  // The local worker has no /opt/bops. A desktop layout is for a cloud computer.
+  if ((await import("@/lib/local/mode")).localOnly()) return;
   const motif = await motifFor(b);
   const rgb = (c: string) => [0, 2, 4].map((i) => parseInt(hex(c).slice(i, i + 2), 16)).join(";;");
   const look = {

@@ -207,11 +207,27 @@ export function CallBar({
     };
 
     // It rings from the moment you call until the bot picks up (or the call doesn't go through).
-    const stopRing = ring();
-    const rangLongEnough = new Promise((r) => setTimeout(r, RING_AT_LEAST_MS));
+    // Local mode never rings: the call request fails at once and the error is shown in the bar.
+    let stopRing = () => {};
     const hush = () => stopRing();
+    let rangLongEnough = Promise.resolve();
     void (async () => {
       try {
+        const mode = (await fetch("/api/local", { cache: "no-store" }).then((r) => r.json()).catch(() => null)) as { localOnly?: boolean } | null;
+        if (mode?.localOnly) {
+          const res = await fetch("/api/call", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "start", botId: b.id, sdp: "" }),
+          });
+          const json = (await res.json().catch(() => null)) as { error?: string } | null;
+          if (gone) return;
+          setError(json?.error ?? "Voice calls stay on this Mac. OpenAI live voice is not used.");
+          setPhase("failed");
+          return;
+        }
+        stopRing = ring();
+        rangLongEnough = new Promise((r) => setTimeout(r, RING_AT_LEAST_MS));
         const pc = new RTCPeerConnection();
         mine.pc = pc;
         pc.addEventListener("track", (e) => {
@@ -368,7 +384,7 @@ export function CallBar({
 
   const clock = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
   const status =
-    phase === "connecting" ? "Ringing…" : phase === "live" ? (working ? "On it…" : clock) : phase === "ending" ? "Hanging up…" : phase === "failed" ? "Call failed" : "Call ended";
+    phase === "connecting" ? "Ringing…" : phase === "live" ? (working ? "On it…" : clock) : phase === "ending" ? "Hanging up…" : phase === "failed" ? (error ?? "Call failed") : "Call ended";
 
   return (
     <div className="relative z-30 flex animate-[call-in_220ms_ease-out] flex-col items-center">
@@ -383,9 +399,9 @@ export function CallBar({
         >
           <Mascot botId={b.id} color={b.color} size={28} live />
         </button>
-        <div className="flex w-[74px] shrink-0 flex-col pl-1">
+        <div className={`flex shrink-0 flex-col pl-1 ${phase === "failed" ? "w-[min(320px,52vw)]" : "w-[74px]"}`}>
           <span className="truncate text-[14px] font-semibold leading-[18px]">{b.name}</span>
-          <span className={`font-mono text-[12px] leading-[15px] ${phase === "failed" ? "text-[#B42318]" : "text-[#6B6B6B]"}`}>{status}</span>
+          <span className={`${phase === "failed" ? "line-clamp-4 font-sans" : "truncate font-mono"} text-[12px] leading-[15px] ${phase === "failed" ? "text-[#B42318]" : "text-[#6B6B6B]"}`}>{status}</span>
         </div>
 
         <div className={`h-10 w-[104px] items-center justify-between px-1.5 ${compact ? "hidden" : "flex"}`} aria-hidden>

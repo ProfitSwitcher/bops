@@ -78,7 +78,16 @@ export function startWorker(opts = {}) {
       if (req.method === "POST" && ["/click", "/type", "/key", "/bash", "/scroll", "/move"].includes(rest)) {
         const body = await readJson(req);
         current.actions.push({ op: rest.slice(1), body });
-        if (kind === "fake") return send(res, 200, { ok: true, output: rest === "/bash" ? "ok" : "", exit_code: 0 });
+        if (rest === "/bash") {
+          if (kind === "fake") return send(res, 200, bashBody(0, "ok", ""));
+          const command = String(body.command || "true");
+          const out =
+            process.platform === "win32"
+              ? await run("powershell", ["-NoProfile", "-Command", command], { allowFail: true })
+              : await run("bash", ["-lc", command], { allowFail: true });
+          return send(res, 200, bashBody(out.code, out.stdout, out.stderr));
+        }
+        if (kind === "fake") return send(res, 200, { ok: true, output: "", exit_code: 0 });
         const output = await act(rest, body);
         return send(res, 200, { ok: true, output, exit_code: 0 });
       }
@@ -240,15 +249,29 @@ async function windowsAct(op, body) {
   return (await run("powershell", ["-NoProfile", "-Command", script])).stdout;
 }
 
-function run(cmd, args) {
+/** A shell result. A non-zero status is returned to the caller; it is not an HTTP error. */
+export function bashBody(code, stdout, stderr) {
+  const output = `${stdout ?? ""}${stderr ? `${stdout ? "\n" : ""}${stderr}` : ""}`;
+  return { output, exit_code: Number.isInteger(code) ? code : 1 };
+}
+
+function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (c) => (stdout += c));
     child.stderr.on("data", (c) => (stderr += c));
-    child.on("error", reject);
-    child.on("close", (code) => (code === 0 ? resolve({ stdout }) : reject(new Error(stderr || `${cmd} exited ${code}`))));
+    let settled = false;
+    const finish = (code, err) => {
+      if (settled) return;
+      settled = true;
+      const out = { stdout, stderr: err || stderr, code };
+      if (opts.allowFail || code === 0) resolve(out);
+      else reject(new Error((err || stderr).trim() || `${cmd} exited ${code}`));
+    };
+    child.on("error", (e) => finish(1, e.message));
+    child.on("close", (code) => finish(code ?? 1));
   });
 }
 

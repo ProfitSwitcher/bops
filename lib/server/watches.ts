@@ -159,7 +159,7 @@ export async function startWatch(botId: string, display: number, lookFor?: strin
   if (lookFor?.trim()) w.lookFor = lookFor.trim();
   // The computer's screen ledger keeps threads and helpers off it.
   const computerId = workComputer(b).computerId;
-  if (getState().host === "orgo" && computerId) {
+  if (getState().host === "orgo" && computerId && !(await import("@/lib/local/mode")).localOnly()) {
     await ensureScreenTools(computerId, b.id);
     const claim = await orgo.bash(computerId, `bops-screens claim watch:${w.id} ${screenNo(display)}`, 15);
     if (claim.exit_code !== 0) throw new Error(`${b.name} is using that screen right now`);

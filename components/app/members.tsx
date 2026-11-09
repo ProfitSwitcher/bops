@@ -253,12 +253,14 @@ export function Members({
             {read.state === "self_hosted" ? (
               <Notice
                 action={
-                  <a href={read.orgoUrl} target="_blank" rel="noreferrer" className={quiet}>
-                    Open orgo.ai
-                  </a>
+                  local ? undefined : (
+                    <a href={read.orgoUrl} target="_blank" rel="noreferrer" className={quiet}>
+                      Open orgo.ai
+                    </a>
+                  )
                 }
               >
-                {WORDS.selfHosted}
+                {local ? "Adding people through Orgo is off. This Bops runs on your machines, and people are not added on orgo.ai." : WORDS.selfHosted}
               </Notice>
             ) : read.state === "signed_out" ? (
               <>

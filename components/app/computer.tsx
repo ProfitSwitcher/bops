@@ -6,6 +6,7 @@ import { freeComputerOpen, ownIsBops, setupShort } from "@/lib/orgo-plans";
 import { BotBrowser } from "./bot-browser";
 import { BotCursor } from "./bot-cursor";
 import { LiveDesktop, Waking } from "./live-desktop";
+import { useLocalOnly } from "./local-mode";
 import { LiveScreen, type ScreenInput } from "./live-screen";
 import { MirrorScreen, type MirrorTab } from "./mirror-screen";
 import { ReaderView } from "./reader-view";
@@ -1380,6 +1381,7 @@ function SharedScreen({ state, bot: b }: { state: AppState; bot: Bot }) {
 /** The computer itself, for the bot's Details: where it came from and how it's running. */
 export function ComputerSummary({ state, bot: b, className = "", onOpen }: { state: AppState; bot: Bot; className?: string; onOpen?: () => void }) {
   // This Mac's browsers are the viewer's own app's: a shared workspace's bot never works there (state.host is the viewer's).
+  const local = useLocalOnly();
   const mac = !state.shared && state.host === "mac";
   const c = mac ? b : workBot(b, state.bots);
   const { info } = useComputer(b.id, mac ? undefined : c.computerId, !mac && computerInUse(state, onComputerOf(state, c)));
@@ -1395,7 +1397,9 @@ export function ComputerSummary({ state, bot: b, className = "", onOpen }: { sta
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="text-[13px] font-semibold leading-4">Computer</span>
         <span className="truncate text-[12px] leading-4 text-[#6B6B6B]">
-          {mac
+          {local
+            ? "The local worker on this Mac"
+            : mac
             ? "Browsers on this Mac"
             : state.shared && b.runsOn === "mac"
               ? `Works on ${yourMac(state)}`
