@@ -44,7 +44,13 @@ const nextConfig: NextConfig = {
   // envs/, local state or the desktop build itself.
   outputFileTracingExcludes: {
     "/*": [
+      "./.data",
       "./.data/**",
+      "./.data/**/*",
+      "**/.data/**",
+      "./bops.local.json",
+      "bops.local.json",
+      "**/bops.local.json",
       "./.env*",
       "./app/**",
       "./assets/**",

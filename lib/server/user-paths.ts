@@ -16,7 +16,15 @@ import { join } from "node:path";
 // such calls carry /*turbopackIgnore: true*/, and the release refuses a build that ships anything
 // but the server (scripts/release.sh).
 const cwd = process.cwd.bind(process);
-export const dataRoot = () => join(cwd(), ".data");
+/**
+ * State, uploads, and local keys. `BOPS_DATA_DIR` is an absolute path set by scripts/local-server.sh
+ * to the repo's `.data`. The standalone server's cwd is `.next/standalone`, and a `.data` copied
+ * there is wiped on the next build.
+ */
+export const dataRoot = () => {
+  const set = process.env.BOPS_DATA_DIR?.trim();
+  return set || join(cwd(), ".data");
+};
 /** The one state file every build before this one kept, whoever was signed in. */
 export const legacyStateFile = () => join(dataRoot(), "state.json");
 

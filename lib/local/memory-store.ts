@@ -4,8 +4,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { dataRoot } from "../server/user-paths";
 import { embed } from "./provider";
 import { loadConfig } from "./mode";
 
@@ -14,7 +15,14 @@ export type Fact = { id: string; content: string; sessionId: string | null; crea
 let db: DatabaseSync | null = null;
 let dbPath = "";
 
-export function memoryDb(path = process.env.BOPS_MEMORY_PATH || loadConfig().memoryPath || ".data/local-memory.sqlite") {
+function memoryFile() {
+  const set = process.env.BOPS_MEMORY_PATH?.trim() || loadConfig().memoryPath?.trim();
+  if (!set) return join(dataRoot(), "local-memory.sqlite");
+  if (isAbsolute(set)) return set;
+  return join(dataRoot(), set.replace(/^\.data[\\/]/, ""));
+}
+
+export function memoryDb(path = memoryFile()) {
   if (db && dbPath === path) return db;
   mkdirSync(dirname(path), { recursive: true });
   db = new DatabaseSync(path);

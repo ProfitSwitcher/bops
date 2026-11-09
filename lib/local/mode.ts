@@ -4,6 +4,7 @@
  * Nothing here is tied to one IP. LAN endpoints must carry an apiKey; loopback may be open.
  */
 import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { isCloudModel } from "./models";
 
 export type ProviderKind = "ollama" | "openai-compatible" | "llamacpp" | "lmstudio" | "mlx" | "vllm" | "exo";
@@ -57,9 +58,17 @@ export function loadConfig(): LocalConfig {
 
 function readConfigFile(): LocalConfig {
   const custom = process.env.BOPS_LOCAL_CONFIG?.trim();
-  if (custom && existsSync(custom)) return parseConfig(readFileSync(custom, "utf8"), custom);
-  if (existsSync("bops.local.json")) return parseConfig(readFileSync("bops.local.json", "utf8"), "bops.local.json");
-  if (existsSync("bops.local.example.json")) return parseConfig(readFileSync("bops.local.example.json", "utf8"), "bops.local.example.json");
+  // An explicit path wins, even when it is missing: never the copy under .next/standalone.
+  if (custom) {
+    if (existsSync(custom)) return parseConfig(readFileSync(custom, "utf8"), custom);
+    const example = join(dirname(custom), "bops.local.example.json");
+    if (existsSync(example)) return parseConfig(readFileSync(example, "utf8"), example);
+    return emptyConfig();
+  }
+  const root = process.env.BOPS_REPO_ROOT?.trim();
+  for (const file of [root ? join(root, "bops.local.json") : "", "bops.local.json", root ? join(root, "bops.local.example.json") : "", "bops.local.example.json"]) {
+    if (file && existsSync(file)) return parseConfig(readFileSync(file, "utf8"), file);
+  }
   return emptyConfig();
 }
 

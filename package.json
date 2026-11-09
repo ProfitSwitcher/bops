@@ -18,7 +18,7 @@
     "local:server": "bash scripts/local-server.sh",
     "local:worker": "node workers/bops-local-worker.mjs",
     "local:llm-proxy": "node workers/bops-llm-proxy.mjs",
-    "test:local": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-local.mjs && node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-local-exo.mjs && node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-local-cloud.mjs",
+    "test:local": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-local.mjs && node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-local-exo.mjs && node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-local-cloud.mjs && node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/test-local-paths.mjs",
     "two-person": "node scripts/dev-two-person.mjs start",
     "two-person:stop": "node scripts/dev-two-person.mjs stop"
   },

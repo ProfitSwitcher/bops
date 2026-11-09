@@ -246,7 +246,7 @@ async function readJson(res: Response, key: string): Promise<Record<string, unkn
 }
 
 function home() {
-  return process.env.BOPS_CLOUD_HOME?.trim() || join(process.cwd(), ".data");
+  return process.env.BOPS_CLOUD_HOME?.trim() || process.env.BOPS_DATA_DIR?.trim() || join(process.cwd(), ".data");
 }
 
 function policyPath() {

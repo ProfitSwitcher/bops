@@ -73,7 +73,7 @@ npx next build
 npm run local:server
 ```
 
-`next dev` is for editing the app. `next start` does not run a build made with `output: "standalone"` (the desktop app needs that output). `npm run local:server` copies the static files into `.next/standalone` and runs `node .next/standalone/server.js` on `127.0.0.1:3210`. Fonts are files in `app/fonts`, so the server does not fetch them.
+`next dev` is for editing the app. `next start` does not run a build made with `output: "standalone"` (the desktop app needs that output). `npm run local:server` copies the static files into `.next/standalone` and runs `node server.js` from that folder on `127.0.0.1:3210`. It sets `BOPS_DATA_DIR` and `BOPS_LOCAL_CONFIG` to this checkout, so state and tokens stay in the repo's `.data` and `bops.local.json`. A rebuild does not replace them. Fonts are files in `app/fonts`, so the server does not fetch them.
 
 The desktop app is still `npm run app` on Apple silicon. The server comes up with the egress guard installed.
 
