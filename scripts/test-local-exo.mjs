@@ -24,7 +24,7 @@ registerHooks({
 process.env.BOPS_LOCAL_ONLY = "1";
 for (const key of ["BOPS_LLM_HEAVY_MODEL", "BOPS_LLM_PLANNER_MODEL", "BOPS_LOCAL_CONFIG"]) delete process.env[key];
 
-const { modelsFromExoState, exoWarmup, resetExoForTests } = await import("../lib/local/exo.ts");
+const { modelsFromExoState, inProgressDownloads, chooseExoPlacement, exoWarmup, resetExoForTests } = await import("../lib/local/exo.ts");
 const { useConfig } = await import("../lib/local/mode.ts");
 const { clearHealth } = await import("../lib/local/endpoints.ts");
 const { chat } = await import("../lib/local/provider.ts");
@@ -49,7 +49,8 @@ function json(res, body, status = 200) {
   res.writeHead(status, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }
-const shard = (id) => ({ PipelineShardMetadata: { modelCard: { modelId: id } } });
+const card = (id) => ({ modelId: id, backends: ["MlxMetal"], storageSize: { inBytes: 10 }, nLayers: 1, hiddenSize: 1, supportsTensor: true, tasks: ["TextGeneration"] });
+const shard = (id) => ({ PipelineShardMetadata: { modelCard: card(id), deviceRank: 0, worldSize: 1, startLayer: 0, endLayer: 1, nLayers: 1 } });
 function readyInstance(model, id = "inst-kimi") {
   return {
     instances: {
@@ -70,7 +71,7 @@ function preview(model, sharding, instanceMeta, nodes) {
   const nodeToRunner = Object.fromEntries(nodes.map((node, i) => [node, `runner-${i}`]));
   return { modelId: model, sharding, instanceMeta, instance: { shardAssignments: { modelId: model, nodeToRunner, runnerToShard: nodeToRunner } }, error: null };
 }
-const busy = (id) => ({ DownloadOngoing: { nodeId: "studio3", shardMetadata: { TensorShardMetadata: { modelCard: { modelId: id } } }, downloadProgress: { downloaded: { inBytes: 1 }, total: { inBytes: 10 } } } });
+const busy = (id) => ({ DownloadOngoing: { nodeId: "studio3", shardMetadata: { TensorShardMetadata: { modelCard: card(id), deviceRank: 0, worldSize: 1, startLayer: 0, endLayer: 1, nLayers: 1 } }, downloadProgress: { downloaded: { inBytes: 1 }, total: { inBytes: 10 }, downloadedThisSession: { inBytes: 1 }, completedFiles: 1, totalFiles: 4, speed: 1, etaMs: 1, files: {} } } });
 
 await check("only DownloadCompleted models count, and a download still in progress does not", async () => {
   const inventory = modelsFromExoState({
@@ -91,6 +92,48 @@ await check("only DownloadCompleted models count, and a download still in progre
   });
   assert.deepEqual(leftover.downloaded, [KIMI]);
   assert.deepEqual(leftover.downloading, []);
+});
+
+await check("exo 0.3.70 state and previews still parse, including backends and node ids", async () => {
+  const studio1 = "4f2c0a1e-7b6d-4e1a-9c33-0a1b2c3d4e5f";
+  const studio3 = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d";
+  const big = "mlx-community/DeepSeek-V4-Flash";
+  const ongoing = busy(big);
+  ongoing.DownloadOngoing.nodeId = studio3;
+  const inventory = modelsFromExoState({
+    nodeBackends: { [studio1]: ["MlxMetal"], [studio3]: ["MlxMetal"] },
+    downloads: { [studio1]: [done(KIMI, studio1)], [studio3]: [ongoing] },
+  });
+  assert.deepEqual(inventory.downloaded, [KIMI]);
+  assert.deepEqual(inventory.downloading, [big]);
+  const progress = inProgressDownloads({ downloads: { [studio3]: [ongoing] } });
+  assert.equal(progress.length, 1);
+  assert.equal(progress[0].node, studio3);
+  assert.equal(progress[0].model, big);
+  assert.deepEqual(progress[0].shard.TensorShardMetadata.modelCard.backends, ["MlxMetal"]);
+  const choice = chooseExoPlacement(
+    {
+      previews: [
+        {
+          model_id: KIMI,
+          sharding: "Tensor",
+          instance_meta: "MlxJaccl",
+          instance: {
+            MlxJacclInstance: {
+              instanceId: "preview-1",
+              shardAssignments: { modelId: KIMI, nodeToRunner: { [studio1]: "r1", [studio3]: "r2" }, runnerToShard: { r1: {}, r2: {} } },
+            },
+          },
+          memory_delta_by_node: { [studio1]: 10, [studio3]: 10 },
+          error: null,
+        },
+      ],
+    },
+    [studio1, studio3],
+  );
+  assert.equal(choice.sharding, "Tensor");
+  assert.equal(choice.instance_meta, "MlxJaccl");
+  assert.deepEqual(choice.nodes.sort(), [studio1, studio3].sort());
 });
 
 await check("heavy uses a downloaded exo model and never asks for one that is still downloading", async () => {
@@ -401,7 +444,13 @@ await check("a runner failure deletes only the instance this attempt created", a
   clearHealth();
   process.env.BOPS_EXO_LOAD_TIMEOUT_MS = "10000";
   const deleted = [];
+  const starts = [];
   let placed = false;
+  let cancelled = false;
+  let resumed = false;
+  const node = "4f2c0a1e-7b6d-4e1a-9c33-0a1b2c3d4e5f";
+  const big = "mlx-community/DeepSeek-V4-Flash";
+  const bigShard = shard(big);
   const exo = await listen(async (req, res) => {
     const path = req.url.split("?")[0];
     if (path === "/state") {
@@ -411,15 +460,23 @@ await check("a runner failure deletes only the instance this attempt created", a
         instances["inst-new"] = failedInstance("inst-new", KIMI);
         runners["inst-new"] = { RunnerFailed: { errorMessage: "Model type deepseek_v4 not supported" } };
       }
-      return json(res, { downloads: { studio1: [done(KIMI, "studio1")] }, instances, runners });
+      const downloads = { [node]: [done(KIMI, node)] };
+      if (!cancelled || resumed) downloads[node].push({ DownloadOngoing: { nodeId: node, shardMetadata: bigShard, downloadProgress: { total: { inBytes: 100 }, downloaded: { inBytes: 40 }, downloadedThisSession: { inBytes: 10 }, completedFiles: 2, totalFiles: 8, speed: 1, etaMs: 5, files: {} } } });
+      return json(res, { downloads, instances, runners });
     }
-    if (path === "/instance/previews") return json(res, { previews: [preview(KIMI, "Pipeline", "MlxRing", ["studio1"])] });
+    if (path === "/instance/previews") return json(res, { previews: [preview(KIMI, "Pipeline", "MlxRing", [node])] });
     if (req.method === "POST" && path === "/place_instance") {
       placed = true;
       return json(res, { message: "Command received." });
     }
+    if (req.method === "POST" && path === "/download/start") {
+      starts.push(await readBody(req));
+      resumed = true;
+      return json(res, { commandId: "dl-1" });
+    }
     if (req.method === "DELETE") {
       deleted.push(path);
+      cancelled = true;
       return json(res, { ok: true });
     }
     json(res, { error: "unexpected" }, 500);
@@ -435,6 +492,55 @@ await check("a runner failure deletes only the instance this attempt created", a
   await assert.rejects(chat({ role: "heavy", messages: [{ role: "user", content: "write" }] }), /Model type deepseek_v4 not supported/);
   assert.ok(Date.now() - started < 2000);
   assert.deepEqual(deleted, ["/instance/inst-new"]);
+  assert.equal(starts.length, 1);
+  assert.equal(starts[0].targetNodeId, node);
+  assert.equal(starts[0].modelId, undefined);
+  assert.equal(starts[0].shardMetadata.PipelineShardMetadata.modelCard.modelId, big);
+  assert.deepEqual(starts[0].shardMetadata.PipelineShardMetadata.modelCard.backends, ["MlxMetal"]);
+  exo.server.close();
+});
+
+await check("cleanup says so when a cancelled download does not resume", async () => {
+  resetExoForTests();
+  clearHealth();
+  process.env.BOPS_EXO_LOAD_TIMEOUT_MS = "1000";
+  let placed = false;
+  let cancelled = false;
+  const node = "4f2c0a1e-7b6d-4e1a-9c33-0a1b2c3d4e5f";
+  const big = "mlx-community/DeepSeek-V4-Flash";
+  const exo = await listen(async (req, res) => {
+    const path = req.url.split("?")[0];
+    if (path === "/state") {
+      const instances = {};
+      const runners = {};
+      if (placed) {
+        instances["inst-new"] = failedInstance("inst-new", KIMI);
+        runners["inst-new"] = { RunnerFailed: { errorMessage: "Model type deepseek_v4 not supported" } };
+      }
+      const downloads = { [node]: [done(KIMI, node)] };
+      if (!cancelled) downloads[node].push({ DownloadOngoing: { nodeId: node, shardMetadata: shard(big), downloadProgress: { total: { inBytes: 10 }, downloaded: { inBytes: 1 }, downloadedThisSession: { inBytes: 1 }, completedFiles: 0, totalFiles: 1, speed: 1, etaMs: 1, files: {} } } });
+      return json(res, { downloads, instances, runners });
+    }
+    if (path === "/instance/previews") return json(res, { previews: [preview(KIMI, "Pipeline", "MlxRing", [node])] });
+    if (req.method === "POST" && path === "/place_instance") {
+      placed = true;
+      return json(res, { message: "Command received." });
+    }
+    if (req.method === "POST" && path === "/download/start") return json(res, { commandId: "dl-1" });
+    if (req.method === "DELETE") {
+      cancelled = true;
+      return json(res, { ok: true });
+    }
+    json(res, { error: "unexpected" }, 500);
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "exo", baseUrl: `${exo.url}/v1`, provider: "exo", apiKey: "" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [{ endpoint: "exo", model: KIMI }] } },
+    },
+    workers: [],
+  });
+  await assert.rejects(chat({ role: "heavy", messages: [{ role: "user", content: "write" }] }), /downloads not resumed: mlx-community\/DeepSeek-V4-Flash/);
   exo.server.close();
 });
 

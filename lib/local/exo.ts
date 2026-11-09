@@ -4,7 +4,9 @@
  * no node has DownloadOngoing or DownloadFailed. A leftover DownloadPending on
  * another node does not block it: placement stays on the nodes that already
  * have the weights. A partial download is never requested, so a chat cannot
- * start a Hugging Face fetch.
+ * start a Hugging Face fetch. exo 0.3.70 cancels every in-progress download
+ * that a running instance is not using when any instance is deleted, so a
+ * cleanup restarts those downloads from the shard it saw in /state.
  */
 
 export type ExoInventory = { downloaded: string[]; downloading: string[] };
@@ -231,18 +233,57 @@ export async function ensureExoInstance(opts: {
     for (const inst of exoInstances(body)) if (!before.has(inst.id)) owned.add(inst.id);
   };
 
+  /**
+   * Deleting an instance on exo 0.3.70 cancels every in-progress download a running
+   * model is not using. Snapshot those first, delete, then POST /download/start
+   * with each original shard so the partial files resume.
+   */
+  const deleteInstances = async (ids: string[]): Promise<string[]> => {
+    if (!ids.length) return [];
+    const notes: string[] = [];
+    const before = await stateOf(opts.origin, headers, fetchImpl, timeoutMs).catch(() => null);
+    const ongoing = before ? inProgressDownloads(before) : [];
+    if (!before) notes.push("could not read /state before deleting, so in-progress downloads were not snapshotted");
+    for (const id of ids) {
+      try {
+        const res = await fetchImpl(`${opts.origin}/instance/${encodeURIComponent(id)}`, { method: "DELETE", headers, signal: AbortSignal.timeout(30_000) });
+        if (!res.ok && res.status !== 404) notes.push(await errorText(res));
+      } catch (e) {
+        notes.push((e as Error).message);
+      }
+    }
+    for (const item of ongoing) {
+      try {
+        const res = await fetchImpl(`${opts.origin}/download/start`, {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({ targetNodeId: item.node, shardMetadata: item.shard }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!res.ok) notes.push(`${item.model} on ${item.node}: ${await errorText(res)}`);
+      } catch (e) {
+        notes.push(`${item.model} on ${item.node}: ${(e as Error).message}`);
+      }
+    }
+    if (ongoing.length) {
+      const resumeDeadline = Date.now() + Math.min(5_000, timeoutMs);
+      let missing = ongoing;
+      while (missing.length && Date.now() < resumeDeadline) {
+        const after = await stateOf(opts.origin, headers, fetchImpl, timeoutMs).catch(() => null);
+        const back = after ? inProgressDownloads(after) : [];
+        missing = ongoing.filter((item) => !back.some((row) => row.node === item.node && row.model.toLowerCase() === item.model.toLowerCase()));
+        if (missing.length) await pause();
+      }
+      if (missing.length) notes.push(`downloads not resumed: ${missing.map((item) => `${item.model} on ${item.node}`).join(", ")}`);
+    }
+    return notes;
+  };
+
   /** Drop instances this attempt created. An instance that was already running is left alone. */
   const giveUp = async (message: string): Promise<never> => {
     const notes: string[] = [];
     if (placedOk) {
-      for (const id of owned) {
-        try {
-          const res = await fetchImpl(`${opts.origin}/instance/${encodeURIComponent(id)}`, { method: "DELETE", headers, signal: AbortSignal.timeout(30_000) });
-          if (!res.ok && res.status !== 404) notes.push(await errorText(res));
-        } catch (e) {
-          notes.push((e as Error).message);
-        }
-      }
+      notes.push(...(await deleteInstances([...owned])));
       notePlacementFailure(opts.origin);
     }
     const removed = placedOk && owned.size ? " Removed the instance this attempt created." : "";
@@ -321,10 +362,8 @@ export async function ensureExoInstance(opts: {
       throw new Error(`${opts.model} will not fit beside the exo instance already running (${others.map((i) => i.modelId).join(", ")}). Eviction is off.`);
     }
     if (result.memory && others.length && opts.allowEvict) {
-      for (const inst of others) {
-        const res = await fetchImpl(`${opts.origin}/instance/${encodeURIComponent(inst.id)}`, { method: "DELETE", headers, signal: AbortSignal.timeout(30_000) });
-        if (!res.ok && res.status !== 404) throw new Error(await errorText(res));
-      }
+      const notes = await deleteInstances(others.map((inst) => inst.id));
+      if (notes.length) throw new Error(notes.join("; "));
       result = await tryPlace();
     }
   }
@@ -378,23 +417,47 @@ export function modelsFromExoState(body: unknown): ExoInventory {
 
 type DownloadStatus = "complete" | "pending" | "ongoing" | "failed";
 
+/** DownloadOngoing rows, with the shard exo 0.3.70 expects back on POST /download/start. */
+export type InProgressDownload = { node: string; model: string; shard: Record<string, unknown> };
+
+export function inProgressDownloads(body: unknown): InProgressDownload[] {
+  const out: InProgressDownload[] = [];
+  for (const row of downloadRows(body)) {
+    if (row.status !== "ongoing" || !row.shard) continue;
+    out.push({ node: row.node, model: row.model, shard: row.shard });
+  }
+  return out;
+}
+
 function downloadEntries(body: unknown): { node: string; model: string; status: DownloadStatus }[] {
+  return downloadRows(body).map(({ node, model, status }) => ({ node, model, status }));
+}
+
+function downloadRows(body: unknown): { node: string; model: string; status: DownloadStatus; shard?: Record<string, unknown> }[] {
   const root = body && typeof body === "object" ? (body as Record<string, unknown>) : {};
   const downloads = root.downloads;
   if (!downloads || typeof downloads !== "object") return [];
-  const out: { node: string; model: string; status: DownloadStatus }[] = [];
+  const out: { node: string; model: string; status: DownloadStatus; shard?: Record<string, unknown> }[] = [];
   for (const [nodeKey, group] of Object.entries(downloads as Record<string, unknown>)) {
-    const items = Array.isArray(group) ? group : group ? [group] : [];
-    for (const item of items) {
+    for (const item of downloadItems(group)) {
       const found = classify(item);
       if (!found.id || !found.status) continue;
-      out.push({ node: found.node || nodeKey, model: found.id, status: found.status });
+      out.push({ node: found.node || nodeKey, model: found.id, status: found.status, shard: found.shard });
     }
   }
   return out;
 }
 
-function classify(item: unknown): { id?: string; status?: DownloadStatus; node?: string } {
+/** /state lists a sequence per node. A map keyed by model id is accepted too. */
+function downloadItems(group: unknown): unknown[] {
+  if (Array.isArray(group)) return group;
+  if (!group || typeof group !== "object") return [];
+  const rec = group as Record<string, unknown>;
+  if (Object.keys(rec).some((key) => /^Download/.test(key))) return [rec];
+  return Object.values(rec);
+}
+
+function classify(item: unknown): { id?: string; status?: DownloadStatus; node?: string; shard?: Record<string, unknown> } {
   if (!item || typeof item !== "object") return {};
   const rec = item as Record<string, unknown>;
   for (const key of Object.keys(rec)) {
@@ -403,7 +466,8 @@ function classify(item: unknown): { id?: string; status?: DownloadStatus; node?:
     const inner = rec[key];
     if (!inner || typeof inner !== "object") continue;
     const obj = inner as Record<string, unknown>;
-    return { id: modelId(obj), status, node: typeof obj.nodeId === "string" ? obj.nodeId : typeof obj.node_id === "string" ? obj.node_id : undefined };
+    const shard = (obj.shardMetadata ?? obj.shard_metadata) as Record<string, unknown> | undefined;
+    return { id: modelId(obj), status, node: typeof obj.nodeId === "string" ? obj.nodeId : typeof obj.node_id === "string" ? obj.node_id : undefined, shard: shard && typeof shard === "object" ? shard : undefined };
   }
   const statusText = String(rec.status ?? rec.type ?? rec.kind ?? "");
   const id = modelId(rec);
