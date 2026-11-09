@@ -51,8 +51,8 @@ export function startWorker(opts = {}) {
     try {
       const url = new URL(req.url || "/", "http://127.0.0.1");
       if (url.pathname === "/health") {
-        const locked = opts.locked === true || (kind !== "fake" && (await macScreenLocked()));
-        return send(res, 200, { ok: true, kind, locked });
+        const lock = opts.locked === true ? "locked" : kind === "fake" ? "open" : await macScreenLocked();
+        return send(res, 200, { ok: true, kind, locked: lock === "locked", lock });
       }
       if (!authorized(req, token, loopbackOnly)) return send(res, 401, { error: "Unauthorized" });
       if (req.method === "POST" && url.pathname === "/v1/sessions") {
@@ -160,21 +160,29 @@ async function act(op, body) {
 /** osascript must not wait on an Automation prompt. */
 export const OSA_TIMEOUT_MS = 8000;
 
-/** True when the Mac's session says the screen is locked. A hang counts as not locked. */
+/**
+ * The session dictionary from CGSessionCopyCurrentDictionary is a raw ref until it is cast.
+ * Calling objectForKey on the ref throws, which must not be reported as an unlocked screen.
+ */
 export function macLockScript() {
   return `ObjC.import("CoreGraphics");
-const d = $.CGSessionCopyCurrentDictionary();
-const v = d && d.objectForKey("CGSSessionScreenIsLocked");
-v && (v === true || v.boolValue) ? "locked" : "open";`;
+const d = ObjC.castRefToObject($.CGSessionCopyCurrentDictionary());
+const v = d.objectForKey("CGSSessionScreenIsLocked");
+v && v.js ? "locked" : "open";`;
 }
 
-async function macScreenLocked() {
-  if (process.platform !== "darwin") return false;
+/** "locked", "open", or "unknown" when the check itself failed. */
+export async function macScreenLocked() {
+  if (process.platform !== "darwin") return "open";
   try {
     const out = await run("osascript", ["-l", "JavaScript", "-e", macLockScript()], { timeoutMs: 2000, allowFail: true });
-    return /locked/.test(out.stdout || "");
-  } catch {
-    return false;
+    const said = String(out.stdout || "").trim();
+    if (out.code === 0 && (said === "locked" || said === "open")) return said;
+    console.warn(`[worker] screen lock check unknown: ${String(out.stderr || said || "no answer").trim().slice(0, 200)}`);
+    return "unknown";
+  } catch (e) {
+    console.warn(`[worker] screen lock check unknown: ${e.message}`);
+    return "unknown";
   }
 }
 

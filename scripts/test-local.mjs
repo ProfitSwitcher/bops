@@ -6,6 +6,7 @@ import { createServer } from "node:http";
 import { registerHooks } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import net from "node:net";
 
 registerHooks({
@@ -44,7 +45,7 @@ const { runResponses, resetResponsesForTests } = await import("../lib/local/resp
 const { runComputerUseLoop } = await import("../lib/local/computer-use.ts");
 const { addFacts, searchFacts, closeMemoryForTests, memoryDb } = await import("../lib/local/memory-store.ts");
 const { installEgressGuard, LocalOnlyError, refusedConnections } = await import("../lib/local/egress.mjs");
-const { startWorker, refuseBind, macKeyScript, macPointerScript, macClickScript, macTypeScript, bashBody, OSA_TIMEOUT_MS } = await import("../workers/bops-local-worker.mjs");
+const { startWorker, refuseBind, macKeyScript, macPointerScript, macClickScript, macTypeScript, macLockScript, bashBody, OSA_TIMEOUT_MS } = await import("../workers/bops-local-worker.mjs");
 const { startProxy } = await import("../workers/bops-llm-proxy.mjs");
 
 let failed = 0;
@@ -434,9 +435,37 @@ await check("mac keys, clicks, and typing post core graphics events", async () =
   assert.match(move, /CGEventCreateMouseEvent/);
   assert.match(move, /CGPointMake\(12, 34\)/);
   assert.doesNotMatch(move, /CGEventCreateScrollWheelEvent/);
+  assert.match(macLockScript(), /ObjC\.castRefToObject\(\$\.CGSessionCopyCurrentDictionary\(\)\)/);
+  assert.match(macLockScript(), /v && v\.js \? "locked" : "open"/);
   const scroll = macPointerScript("/scroll", { x: 3, y: 4, scroll_y: 120, scroll_x: -40 });
   assert.match(scroll, /CGEventCreateMouseEvent/);
   assert.match(scroll, /CGEventCreateScrollWheelEvent\(src, 0, 2, -120, -40\)/);
+});
+
+await check("the mac lock script prints locked or open", async () => {
+  if (process.platform !== "darwin") return;
+  const said = await new Promise((resolve, reject) => {
+    const child = spawn("osascript", ["-l", "JavaScript", "-e", macLockScript()], { stdio: ["ignore", "pipe", "pipe"] });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("osascript timed out"));
+    }, 4000);
+    child.stdout.on("data", (c) => {
+      out += c;
+    });
+    child.stderr.on("data", (c) => {
+      err += c;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code !== 0) reject(new Error(err.trim() || `osascript exited ${code}`));
+      else resolve(out.trim());
+    });
+  });
+  assert.match(said, /^(locked|open)$/);
 });
 
 await check("structured calls send a schema and fences are stripped", async () => {

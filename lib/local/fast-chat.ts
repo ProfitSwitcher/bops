@@ -53,8 +53,17 @@ export function stripImitatedDeeds(text: string): { text: string; claimedTask?: 
   return { text: text.replace(IMITATED_DEED, "").replace(/\n{3,}/g, "\n\n").trim(), claimedTask };
 }
 
-/** Stage timings for a local chat turn. Printed only when BOPS_CHAT_TIMING=1. */
+/** The user message's `at`, so every stage can be read as time since they sent it. */
+let clockAt = 0;
+export function chatClock(at: number) {
+  if (at) clockAt = at;
+}
+
+/** Stage timings for a local chat turn. Printed only when BOPS_CHAT_TIMING=1. Offset is since the message; the parenthetical is this stage's own duration. */
 export function chatStage(stage: string, started: number, extra = "") {
   if (process.env.BOPS_CHAT_TIMING !== "1") return;
-  console.log(`[chat] ${stage} ${Date.now() - started}ms${extra ? ` ${extra}` : ""}`);
+  const now = Date.now();
+  const since = clockAt ? now - clockAt : now - started;
+  const dur = now - started;
+  console.log(`[chat] ${stage} +${since}ms (${dur}ms)${extra ? ` ${extra}` : ""}`);
 }

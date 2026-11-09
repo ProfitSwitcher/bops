@@ -19,7 +19,7 @@ import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { openaiClient } from "./openai-client";
 import { answerRoute } from "@/lib/local/responses";
 import { localOnly } from "@/lib/local/mode";
-import { chatStage, isSimpleLocalChat, stripImitatedDeeds, taskFromPromise } from "@/lib/local/fast-chat";
+import { chatClock, chatStage, isSimpleLocalChat, stripImitatedDeeds, taskFromPromise } from "@/lib/local/fast-chat";
 import { contactLine, createBot, namesTheUser } from "./bots";
 import { creditsOut, noteOutOfCredit, outOfCreditWords } from "./cloud";
 import { noOwnComputer } from "./plan";
@@ -661,6 +661,8 @@ export async function handleMessage(
   const root = target ? (target.replyTo ?? target.id) : undefined;
   const app = lookingAt && madeApp(lookingAt) ? lookingAt : undefined;
   const mine = addMessage({ chatId, role: "user", text, replyTo: root, images: images?.length ? images : undefined, files: files?.length ? files : undefined, via, phone, channel, lookingAt: app, ...(member ? { member: saidOf(member) } : {}), ...(agent && !member && /^[A-Za-z0-9_]{1,40}$/.test(agent) ? { agent } : {}), ...(appNote && !member ? { appNote: true as const } : {}), ...(appNote && !member && picks?.length ? { picks } : {}) });
+  chatClock(mine.at);
+  chatStage("received", mine.at);
   trackServerEvent("bops_message_sent", { chat_kind: c.kind, via: onCall ? "call" : (via ?? "app"), image_count: images?.length ?? 0, is_reply: !!root });
   // Into the shared memory (unless the user wants it kept from someone), and remembered if it's a lasting fact. A
   // member's words go in as theirs, so nothing they say about themselves is taken for the owner.
@@ -902,6 +904,24 @@ async function continueThread(chatId: string, text: string, replyTo?: string, me
   const threads = followUpThreads(chatId, member);
   if (!threads.length) return false;
   if (localOnly() && isSimpleLocalChat(text)) return false;
+  // A model read here runs before the reply and is not part of the timed turn. Locally, only a
+  // direct reply to a thread's message continues it. Everything else, including "remember…", goes to the bot at once.
+  if (localOnly()) {
+    const t0 = Date.now();
+    const root = replyTo ? getState().messages.find((m) => m.id === replyTo && m.chatId === chatId) : undefined;
+    const target = root ? threads.find((s) => isAbout(root, s)) : undefined;
+    chatStage("continue-thread", t0, target ? "reply" : "skip");
+    if (!target) return false;
+    if (mentionsMac(text) && target.runsOn !== "mac" && getState().mac?.ready) return false;
+    if (!ours()) return true;
+    replyToSession(target.id, text, undefined, undefined, member ? saidOf(member) : undefined);
+    const c = chat(chatId)!;
+    const speaker = c.kind === "bot" ? c.botIds[0] : target.botId;
+    const owner = bot(target.botId);
+    const said = await acknowledge(bot(speaker), text, target.title, speaker === target.botId ? undefined : owner?.name);
+    if (ours()) addMessage({ chatId, role: "bot", botId: speaker, text: said, sessionIds: [target.id] });
+    return true;
+  }
   // Where apps on the web are open: work on one is the chat's to start (work_on_app), as only a thread on that app
   // (Session.app) has its working folder, so Jev is told which app each thread is on. "Work on the app recipe-box"
   // right after a plain task about it that couldn't (it had no folder) went to that task, which can't call work_on_app.
@@ -1984,6 +2004,9 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
   if (!bg) setTyping(chatId, botId, true);
   let simpleLocal = false;
   const turnAt = Date.now();
+  const askedStamp = opts.answering ? getState().messages.find((m) => m.id === opts.answering && m.chatId === chatId)?.at : undefined;
+  if (askedStamp) chatClock(askedStamp);
+  chatStage("turn-start", askedStamp ?? turnAt);
   try {
     // Its teammates: the ones it may ask on the team chart (lib/chain.ts: everyone, without one), and on a member's
     // turn only the ones they see (Read or Write) too. A bot it may not ask, or not given them, stays hidden: in what
