@@ -209,8 +209,7 @@ export async function ensureExoInstance(opts: {
     await waitReady();
     return;
   }
-  const detail = result === "placed" || result === "exists" ? "" : result.memory || result.other;
-  throw new Error(detail || `exo did not place ${opts.model}`);
+  throw new Error(result.memory || result.other || `exo did not place ${opts.model}`);
 }
 
 export function modelsFromExoState(body: unknown): ExoInventory {
