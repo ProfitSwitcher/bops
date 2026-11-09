@@ -17,6 +17,7 @@ import {
 } from "@/lib/members";
 import { accessKey, accessOf, cleanAccess, currentFor, fitComputer, inviteDefault, isAccessLevel, isComputerUse, timeOf, usesComputer, type MemberAccess, type MemberAccessMap } from "@/lib/member-access";
 import { PEOPLE_CAPS } from "@/lib/plan-includes";
+import { localOnly } from "@/lib/local/mode";
 import { MAIN_WORKSPACE, runnerKeyMade, workspaceOf } from "@/lib/types";
 import { trackServerEvent } from "./analytics";
 import { notePeopleIn } from "./apps-for-members";
@@ -398,6 +399,7 @@ async function load(key: string, { fresh = false } = {}): Promise<Loaded> {
 
 /** GET /api/members: who has access, or why the sheet can't say (self-hosted, signed out, no computer yet). */
 export async function readMembers(): Promise<Answer> {
+  if (localOnly()) return ok({ state: "self_hosted" });
   if (!stateInCloud()) return ok({ state: "self_hosted", orgoUrl: `${orgoOrigin()}/workspaces` });
   const key = await loadOrgoKey();
   if (!key) return ok({ state: "signed_out", why: "no_key" });

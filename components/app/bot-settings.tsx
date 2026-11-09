@@ -51,8 +51,6 @@ export type SettingsLinks = {
   onOpenChart?: (botId: string) => void;
 };
 
-const reduced = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-
 /** Whether a Mac or runner on the account runs a Bops from before these settings (the org chart's check). */
 function useOlderBops() {
   const [older, setOlder] = useState(false);
@@ -101,10 +99,17 @@ export function BotSettingsPage({
   const { reach } = contactOf(state, b, plan);
   const wsName = state.workspaces?.find((w) => w.id === workspaceOf(b))?.name ?? "";
   /** A card to the top of the column (once it's open). */
-  const scrollTo = (s: SettingsSection, smooth: boolean, focus = false) =>
+  const scrollTo = (s: SettingsSection, _smooth: boolean, focus = false) =>
     setTimeout(() => {
-      const card = main.current?.querySelector<HTMLElement>(`#settings-${s}`);
-      card?.scrollIntoView?.({ block: "start", behavior: smooth && !reduced() ? "smooth" : "auto" });
+      const scroller = main.current;
+      const card = scroller?.querySelector<HTMLElement>(`#settings-${s}`);
+      if (scroller) {
+        if (!card) scroller.scrollTop = 0;
+        else {
+          const top = card.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+          scroller.scrollTop = Math.max(0, top);
+        }
+      }
       // Picked in the left column: the keyboard goes on from the card's own header.
       if (focus) card?.querySelector<HTMLElement>("button[aria-expanded]")?.focus({ preventScroll: true });
     }, 0);
@@ -115,6 +120,7 @@ export function BotSettingsPage({
   };
   useEffect(() => {
     heading.current?.focus({ preventScroll: true });
+    if (main.current) main.current.scrollTop = 0;
     // Only as it opens: a later section comes with a new page (bops-app.tsx keys it).
     if (at) scrollTo(at, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps

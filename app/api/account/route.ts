@@ -1,3 +1,6 @@
+import { localOnly } from "@/lib/local/mode";
+import { readLocalProfile } from "@/lib/local/profile";
+import { localAccountPayload } from "@/lib/local/settings-links";
 import type { CloudUsage } from "@/cloud/protocol";
 import type { AccountInfo, OrgoBilling, SpendKind, TokenSource, UsageTotals } from "@/lib/account";
 import { bopsComputers, planName, planShort, planShortText, planUp } from "@/lib/orgo-plans";
@@ -20,6 +23,24 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   const state = getState();
+  if (localOnly()) {
+    const name = readLocalProfile()?.name || state.owner?.name || "Local";
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const lastMonthStart = new Date(now.getFullYear(), now.getMonth() - 1, 1).getTime();
+    const events = usageSince(lastMonthStart);
+    return Response.json({
+      ...localAccountPayload(name),
+      signedInAt: state.account?.signedInAt,
+      usage: {
+        thisMonth: totals(events.filter((e) => e.at >= monthStart), monthStart, null),
+        lastMonth: totals(events.filter((e) => e.at < monthStart), lastMonthStart, null),
+        monthStart,
+        lastMonthStart,
+      },
+      reach: [],
+    });
+  }
   const user = signedInUser();
   const key = user ? await loadOrgoKey().then(() => orgoKey()) : null;
   const now = new Date();

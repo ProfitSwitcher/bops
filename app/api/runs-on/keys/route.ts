@@ -1,3 +1,4 @@
+import { localOnly } from "@/lib/local/mode";
 import { computerKeys, orgoKeysPage } from "@/lib/server/computer-keys";
 import { stateReady } from "@/lib/server/store";
 
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
  * sees and revokes their keys on Orgo. Each computer's answer is kept a minute.
  */
 export async function GET(request: Request) {
+  if (localOnly()) return Response.json({ keys: {}, manage: "", local: true });
   const manage = orgoKeysPage();
   if (!stateReady()) return Response.json({ keys: {}, manage });
   const ids = (new URL(request.url).searchParams.get("ids") ?? "")

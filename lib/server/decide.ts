@@ -1,5 +1,7 @@
 import "server-only";
 import { appHeaders } from "./app-version";
+import { localOnly } from "@/lib/local/mode";
+import { chat } from "@/lib/local/provider";
 import { cloudProxy, cloudSession } from "./cloud";
 import { stateEpoch } from "./store";
 import { recordDecide, usageTags } from "./usage";
@@ -28,6 +30,7 @@ export type Answer =
 
 /** Ask several questions about one state in a single call. Null when Jev isn't set up or fails. */
 export async function decide<K extends string>(state: Text, questions: Partial<Record<K, Question>>, opts: { botId?: string } = {}): Promise<Partial<Record<K, Answer>> | null> {
+  if (localOnly()) return localDecide(state, questions);
   const via = cloudProxy("typesafe");
   const key = via ? via.key : process.env.TYPESAFE_API_KEY;
   if (!key || (via && !(await cloudSession().catch(() => null))?.typesafe)) return null;
@@ -49,6 +52,25 @@ export async function decide<K extends string>(state: Text, questions: Partial<R
     return answer.answers;
   } catch (e) {
     console.warn("[decide]", (e as Error).message);
+    return null;
+  }
+}
+
+/** A small local model, when one is up. Null when it isn't, the same as TypeSafe being unset. */
+async function localDecide<K extends string>(state: Text, questions: Partial<Record<K, Question>>): Promise<Partial<Record<K, Answer>> | null> {
+  try {
+    const result = await chat({
+      role: "fast",
+      messages: [
+        { role: "system", content: "Answer the questions as JSON. choice: {\"type\":\"choice\",\"choice\":\"...\",\"confidence\":0.8,\"probabilities\":{}}. noul: {\"type\":\"noul\",\"noul\":0.2}. No other text." },
+        { role: "user", content: JSON.stringify({ state, questions }).slice(0, 8000) },
+      ],
+    });
+    const match = result.content.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const parsed = JSON.parse(match[0]) as { answers?: Partial<Record<K, Answer>> };
+    return parsed.answers && typeof parsed.answers === "object" ? parsed.answers : (parsed as Partial<Record<K, Answer>>);
+  } catch {
     return null;
   }
 }

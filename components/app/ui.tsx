@@ -313,7 +313,7 @@ export const chatInWorkspace = (state: AppState, c: Chat) => (c.workspaceId ?? w
  * Settings shows only what's yours to set, and there are no usage events to mention.
  */
 export function useSelfHosted() {
-  const [selfHosted, setSelfHosted] = useState(false);
+  const [selfHosted, setSelfHosted] = useState(true);
   useEffect(() => {
     void fetch("/api/config")
       .then((r) => r.json())

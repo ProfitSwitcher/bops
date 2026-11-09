@@ -29,6 +29,7 @@ import {
 import { peopleAside, peopleShort, upgradeLabel } from "@/lib/plan-includes";
 import { workspaceOf, type AppState, type Bot } from "@/lib/types";
 import { initialsFrom, LoadFailed, Notice, Placeholder, Section, useSignOut } from "./account";
+import { useLocalOnly } from "./local-mode";
 import { Mascot, Spinner } from "./mascot";
 import { usePlan } from "./plan-note";
 import { AskInPlace, NeedsYouDot, teamOf } from "./ui";
@@ -216,6 +217,7 @@ export function Members({
   }, [people]);
 
   const leaving = useSignOut(onClose);
+  const local = useLocalOnly();
 
   return (
     <section aria-labelledby="members-title" data-team className="flex max-w-[760px] flex-col">
@@ -251,18 +253,20 @@ export function Members({
             {read.state === "self_hosted" ? (
               <Notice
                 action={
-                  <a href={read.orgoUrl} target="_blank" rel="noreferrer" className={quiet}>
-                    Open orgo.ai
-                  </a>
+                  !local && read.orgoUrl ? (
+                    <a href={read.orgoUrl} target="_blank" rel="noreferrer" className={quiet}>
+                      Open orgo.ai
+                    </a>
+                  ) : undefined
                 }
               >
-                {WORDS.selfHosted}
+                {local ? "Adding people through Orgo is off. This Bops runs on your machines, and people are not added on orgo.ai." : WORDS.selfHosted}
               </Notice>
             ) : read.state === "signed_out" ? (
               <>
                 <Notice
-                  action={
-                    !leaving.ask && (
+                  action=                  {
+                    !local && !leaving.ask && (
                       <button disabled={leaving.busy} onClick={() => void leaving.signOut()} className={`${quiet} disabled:opacity-50`}>
                         Sign out
                       </button>
@@ -289,7 +293,7 @@ export function Members({
           </Section>
         )}
 
-        {read?.state === "ready" && read.shared ? (
+        {read?.state === "ready" && read.shared && !local && read.orgoUrl ? (
           <div className="px-[22px] pb-5 pt-5 text-[12px] leading-4 text-[#9A9A98]">
             <a href={read.orgoUrl} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-ink">
               Open on orgo.ai
@@ -297,11 +301,14 @@ export function Members({
           </div>
         ) : read?.state === "ready" ? (
           <div className="px-[22px] pb-5 pt-5 text-[12px] leading-4 text-[#9A9A98]">
-            People you add sign in with the email you invite. In Bops they see everything of the bots you pick, your chats with them too. On orgo.ai they see every bot&apos;s
-            computer, like an open inbox, and can ask Orgo&apos;s agent to work on it. {read.keysOnComputers ? "Never your saved logins." : "Never your saved logins or keys."}{" "}
+            {local
+              ? "Inviting people through Orgo is off. This Bops runs on your machines."
+              : <>People you add sign in with the email you invite. In Bops they see everything of the bots you pick, your chats with them too. On orgo.ai they see every bot&apos;s computer, like an open inbox, and can ask Orgo&apos;s agent to work on it. {read.keysOnComputers ? "Never your saved logins." : "Never your saved logins or keys."}{" "}
+            {read.orgoUrl && (
             <a href={read.orgoUrl} target="_blank" rel="noreferrer" className="underline underline-offset-2 hover:text-ink">
               Open on orgo.ai
             </a>
+            )}</>}
           </div>
         ) : (
           <div className="pb-5" />
@@ -1003,7 +1010,6 @@ function InviteForm({
       <div className="flex items-center gap-2">
         <input
           type="email"
-          autoFocus
           value={email}
           readOnly={busy}
           maxLength={254}

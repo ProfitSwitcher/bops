@@ -172,6 +172,10 @@ The app itself is Electron and Next.js.
 - **Signed in with Orgo**, the app works through Bops Cloud (`cloud/`), the server Orgo runs for hosted Bops. Orgo's provider keys stay there, and your Mac gets only narrow ones: a key for your own mailboxes and a spend-capped key for tasks. Bops Cloud also takes the webhooks for texts, calls and Slack, and keeps your chats in your account.
 - **Self-hosted** (`BOPS_SELF_HOSTED=1`), the app calls each provider directly with the keys in `.env.local` and keeps its state in `.data/` on your Mac. A small relay (`edge/`) can give the webhooks a public HTTPS address.
 
+## Run it on your own machines
+
+This fork is local-only: after the app and models are downloaded, chat, tools, computer use, and memory keep working with internet egress blocked. Copy `bops.local.example.json` to `bops.local.json`, pull the models named there, and follow [LOCAL_SETUP.md](LOCAL_SETUP.md). `BOPS_LOCAL_ONLY=0` is the rollback to the upstream cloud providers.
+
 ## Run it yourself
 
 ### Requirements

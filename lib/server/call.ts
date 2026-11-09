@@ -121,6 +121,9 @@ export async function voicePrompt(b: Bot, how: "live" | "turns" = "live") {
 export async function startCall(botId: string, sdp: string) {
   const b = bot(botId);
   if (!b) throw new Error("no such bot");
+  if ((await import("@/lib/local/mode")).localOnly()) {
+    throw new Error("Voice calls stay on this Mac. OpenAI live voice is not used. Use the chat, or set BOPS_LLM_TRANSCRIBE_URL to a local whisper server for the microphone. This call will not keep ringing.");
+  }
   callStarted(botId);
   try {
     const result = await client.live.create({

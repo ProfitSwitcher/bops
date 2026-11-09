@@ -15,6 +15,7 @@ import { KnowledgeIcon, type OrbitSection } from "./memory-categories";
 import { KeyIcon } from "./screen-cards";
 import { MonitorIcon, teamOf } from "./ui";
 import { readOnly, seesBrowser } from "@/lib/shared";
+import { useLocalOnly } from "./local-mode";
 
 /*
  * The right side is a row of tabs in the title bar, like a browser's. The first tab is always the
@@ -356,9 +357,11 @@ function GlobeIcon() {
 type WebviewElement = HTMLElement & { goBack: () => void; goForward: () => void; reload: () => void; getURL: () => string; canGoBack: () => boolean; loadURL: (url: string) => Promise<void> };
 
 /** What was typed in an address bar, as a URL: an address as is (https:// added), anything else a Google search. */
-export const toAddress = (typed: string) => {
+export const toAddress = (typed: string, local = false) => {
   const a = typed.trim();
-  return /^[a-z]+:\/\//i.test(a) ? a : /\s/.test(a) || !a.includes(".") ? `https://www.google.com/search?q=${encodeURIComponent(a)}` : `https://${a}`;
+  if (/^[a-z]+:\/\//i.test(a)) return a;
+  if (/\s/.test(a) || !a.includes(".")) return local || !a ? "" : `https://www.google.com/search?q=${encodeURIComponent(a)}`;
+  return `https://${a}`;
 };
 
 /**
@@ -378,9 +381,11 @@ export function WebTab({ url, hidden, user, onPage, botBrowser }: { url: string;
   const [at, setAt] = useState(url);
   // What's in the address bar while the user edits it (null: it shows the page's address).
   const [typing, setTyping] = useState<string | null>(null);
+  const local = useLocalOnly();
   const go = (typed: string) => {
     if (!typed.trim()) return;
-    const next = toAddress(typed);
+    const next = toAddress(typed, local);
+    if (!next) return;
     setTyping(null);
     setAt(next);
     if (native && view) void view.loadURL(next).catch(() => {});
@@ -497,12 +502,14 @@ export function NewTab({
   onMac: () => void;
 }) {
   const [address, setAddress] = useState("");
+  const local = useLocalOnly();
   const go = () => {
-    if (address.trim()) onWeb(toAddress(address));
+    const next = toAddress(address, local);
+    if (next) onWeb(next);
   };
   const typed = address.trim();
   // The site it'll open, when what's typed is an address rather than a search.
-  const target = typed ? toAddress(typed) : "";
+  const target = typed ? toAddress(typed, local) : "";
   const site = target && !target.startsWith("https://www.google.com/search?") ? hostOf(target).replace(/^www\./, "") : null;
   return (
     <div className="motion-fade-in flex min-h-0 flex-1 flex-col items-center gap-6 overflow-y-auto px-8 pt-[12vh]">
@@ -532,7 +539,7 @@ export function NewTab({
             autoFocus
             value={address}
             onChange={(e) => setAddress(e.target.value)}
-            placeholder="Search Google or type a URL"
+            placeholder={local ? "Type a URL" : "Search Google or type a URL"}
             spellCheck={false}
             className="min-w-0 flex-1 bg-transparent py-3 text-[15px] leading-5 outline-none placeholder:text-[#9A9A98]"
           />
@@ -542,12 +549,16 @@ export function NewTab({
           <button type="submit" className="flex items-center gap-2.5 rounded-[14px] px-4 py-2 text-left text-[13.5px] leading-5 hover:bg-[#F7F7F6]">
             <span className="flex size-5 shrink-0 items-center justify-center">
               {/* eslint-disable-next-line @next/next/no-img-element -- a site's own icon, any domain */}
-              <img src={`https://www.google.com/s2/favicons?sz=32&domain=${encodeURIComponent(site ?? "google.com")}`} alt="" width={16} height={16} className="rounded-[3px]" />
+              {local || !site ? <GlobeIcon /> : <img src={`https://www.google.com/s2/favicons?sz=32&domain=${encodeURIComponent(site)}`} alt="" width={16} height={16} className="rounded-[3px]" />}
             </span>
             <span className="min-w-0 flex-1 truncate text-[#6B6B6B]">
               {site ? (
                 <>
                   Go to <span className="font-medium text-ink">{site}</span>
+                </>
+              ) : local ? (
+                <>
+                  Web search is unavailable offline
                 </>
               ) : (
                 <>

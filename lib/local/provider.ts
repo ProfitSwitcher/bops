@@ -1,0 +1,279 @@
+/**
+ * OpenAI-compatible chat and embeddings against the configured local chain.
+ * Talks to /v1 first, then the native Ollama routes older servers still use.
+ */
+import { authHeaders, checkEndpoint, originOf, withRole, type Attempt } from "./endpoints";
+import { beginExoWarmup, endExoWarmup, ensureExoInstance, exoLoadTimeoutMs } from "./exo";
+import { cloudPlan, noteLocalAnswer, redactSecrets, tryCloudChat } from "./cloud";
+import { assertLocalModel, CloudModelError, hasModel } from "./models";
+import { exoAllowEvict, type Role } from "./mode";
+
+export type ContentPart = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
+export type ChatMessage = {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | ContentPart[] | null;
+  tool_calls?: { id: string; type: "function"; function: { name: string; arguments: string } }[];
+  tool_call_id?: string;
+};
+export type ToolDef = { type: "function"; function: { name: string; description?: string; parameters?: unknown } };
+export type ToolCall = { id: string; name: string; arguments: string };
+export type ChatResult = {
+  model: string;
+  endpoint: string;
+  content: string;
+  toolCalls: ToolCall[];
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+  degraded?: string;
+  /** Set only when this answer came from a provider the owner explicitly enabled. */
+  cloud?: { provider: string; name: string };
+};
+
+const CHAT_MS = 180_000;
+
+function chatTimeout(attempt: Attempt): number {
+  return attempt.endpoint.provider === "exo" ? exoLoadTimeoutMs() : CHAT_MS;
+}
+
+/** How long Ollama keeps a model loaded. Planner and fast stay up so a chat does not reload a 74 GB model. */
+export function ollamaKeepAlive(role: Role): string {
+  const all = process.env.BOPS_OLLAMA_KEEP_ALIVE?.trim();
+  if (all) return all;
+  if (role === "planner" || role === "fast") return "24h";
+  return "30m";
+}
+
+export async function chat(opts: {
+  role: Role;
+  messages: ChatMessage[];
+  tools?: ToolDef[];
+  preferModel?: string;
+  jsonSchema?: Record<string, unknown>;
+  fetchImpl?: typeof fetch;
+}): Promise<ChatResult> {
+  if (opts.preferModel) assertLocalModel(opts.preferModel);
+  const hasImage = JSON.stringify(opts.messages).includes("image_url");
+  const plan = cloudPlan(opts.role);
+  const notes: string[] = [];
+  if (plan === "prefer") {
+    try {
+      return await tryCloudChat(opts);
+    } catch (e) {
+      notes.push(redactSecrets((e as Error).message));
+    }
+  }
+  try {
+    const { value, attempt, skipped } = await withRole(
+      opts.role,
+      async (attempt) => complete(attempt, opts.messages, opts.tools ?? [], hasImage, opts.fetchImpl, { jsonSchema: opts.jsonSchema, keepAlive: ollamaKeepAlive(opts.role) }),
+      { preferModel: opts.preferModel, fetchImpl: opts.fetchImpl },
+    );
+    noteLocalAnswer();
+    const degraded = [...notes, ...skipped].filter(Boolean).join(" | ");
+    return { ...value, model: attempt.model, endpoint: attempt.endpoint.id, ...(degraded ? { degraded } : {}) };
+  } catch (e) {
+    if (plan !== "fallback") throw e;
+    try {
+      const cloud = await tryCloudChat(opts);
+      return { ...cloud, degraded: redactSecrets(`${(e as Error).message} | used the cloud fallback you turned on`) };
+    } catch (err) {
+      throw new Error(redactSecrets(`${(e as Error).message} | ${(err as Error).message}`));
+    }
+  }
+}
+
+async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], hasImage: boolean, fetchImpl: typeof fetch = fetch, extra: { jsonSchema?: Record<string, unknown>; keepAlive?: string } = {}): Promise<Omit<ChatResult, "model" | "endpoint">> {
+  assertLocalModel(attempt.model);
+  if (attempt.endpoint.provider === "exo") await assertExoReady(attempt, fetchImpl);
+  const headers = { "Content-Type": "application/json", ...authHeaders(attempt.endpoint) };
+  const base = attempt.endpoint.baseUrl.replace(/\/+$/, "");
+  const body: Record<string, unknown> = { model: attempt.model, messages, temperature: 0.2 };
+  if (tools.length) body.tools = tools;
+  if (extra.keepAlive && attempt.endpoint.provider === "ollama") body.keep_alive = extra.keepAlive;
+  if (extra.jsonSchema) body.response_format = { type: "json_schema", json_schema: { name: "result", schema: extra.jsonSchema, strict: true } };
+  if (extra.jsonSchema && attempt.endpoint.provider === "ollama") {
+    const native = await nativeChat(attempt, messages, tools, headers, fetchImpl, extra.keepAlive, extra.jsonSchema);
+    return fromOpenAI(native);
+  }
+  const timeout = chatTimeout(attempt);
+  const exo = attempt.endpoint.provider === "exo";
+  if (exo) beginExoWarmup(attempt.endpoint.id, attempt.model);
+  let res: Response;
+  try {
+    if (exo) {
+      await ensureExoInstance({
+        origin: originOf(attempt.endpoint.baseUrl),
+        model: attempt.model,
+        headers,
+        fetchImpl,
+        allowEvict: exoAllowEvict(),
+        timeoutMs: timeout,
+      });
+    }
+    res = await fetchImpl(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) });
+  } finally {
+    if (exo) endExoWarmup(attempt.endpoint.id, attempt.model);
+  }
+  let payload: unknown;
+  if ((res.status === 404 || res.status === 405) && !exo) {
+    payload = await nativeChat(attempt, messages, tools, headers, fetchImpl, extra.keepAlive, extra.jsonSchema);
+  } else if (!res.ok) {
+    const text = (await res.text()).slice(0, 500);
+    if (res.status === 404 || /not found|unknown model|does not exist/i.test(text)) throw new Error(text);
+    if (hasImage && /image|vision|multimodal|image input/i.test(text)) throw new Error(text);
+    if (tools.length && /tool|support|unimplemented|invalid/i.test(text)) {
+      const bare = await fetchImpl(`${base}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ model: attempt.model, messages: withToolHint(messages, tools), temperature: 0.2 }),
+        signal: AbortSignal.timeout(timeout),
+      });
+      if (!bare.ok) throw new Error((await bare.text()).slice(0, 500));
+      payload = await bare.json();
+      const parsed = fromOpenAI(payload);
+      const loose = parsed.toolCalls.length ? parsed.toolCalls : looseToolCalls(parsed.content);
+      return { ...parsed, toolCalls: loose, degraded: "This model didn't accept tool calls. Actions were read from its text." };
+    }
+    throw new Error(text);
+  } else {
+    payload = await res.json();
+  }
+  const parsed = fromOpenAI(payload);
+  if (!parsed.toolCalls.length && tools.length) {
+    const loose = looseToolCalls(parsed.content);
+    if (loose.length) return { ...parsed, toolCalls: loose, degraded: "Tool calls were read from the model's text." };
+  }
+  return parsed;
+}
+
+async function nativeChat(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], headers: Record<string, string>, fetchImpl: typeof fetch, extraKeep?: string, extraFormat?: Record<string, unknown>) {
+  const origin = originOf(attempt.endpoint.baseUrl);
+  const nativeMessages = messages.map(toNative);
+  const body: Record<string, unknown> = { model: attempt.model, messages: nativeMessages, stream: false };
+  if (tools.length) body.tools = tools.map((t) => ({ type: "function", function: t.function }));
+  if (extraKeep) body.keep_alive = extraKeep;
+  if (extraFormat) body.format = extraFormat;
+  const res = await fetchImpl(`${origin}/api/chat`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(CHAT_MS),
+  });
+  if (!res.ok) throw new Error((await res.text()).slice(0, 500));
+  const json = (await res.json()) as { message?: { content?: string; tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] }; eval_count?: number; prompt_eval_count?: number };
+  const calls = (json.message?.tool_calls ?? []).map((c, i) => ({
+    id: c.id || `call_${i + 1}`,
+    name: String(c.function?.name || ""),
+    arguments: typeof c.function?.arguments === "string" ? c.function.arguments : JSON.stringify(c.function?.arguments ?? {}),
+  }));
+  return {
+    choices: [
+      {
+        message: { content: json.message?.content ?? "", tool_calls: calls.map((c) => ({ id: c.id, type: "function", function: { name: c.name, arguments: c.arguments } })) },
+      },
+    ],
+    usage: { prompt_tokens: json.prompt_eval_count, completion_tokens: json.eval_count, total_tokens: (json.prompt_eval_count ?? 0) + (json.eval_count ?? 0) },
+  };
+}
+
+/** Refuse a chat that would ask exo to fetch weights. /state is already cached by the health check. */
+async function assertExoReady(attempt: Attempt, fetchImpl: typeof fetch) {
+  const health = await checkEndpoint(attempt.endpoint, fetchImpl);
+  const name = attempt.model;
+  if (health.partial?.some((id) => id.toLowerCase() === name.toLowerCase())) throw new Error(`${name} is still downloading on exo`);
+  if (!health.models || !hasModel(health.models, name)) throw new Error(`${name} is not fully downloaded on exo`);
+}
+
+function toNative(m: ChatMessage) {
+  if (typeof m.content === "string" || m.content == null) return { role: m.role, content: m.content ?? "" };
+  const text = m.content.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join("\n");
+  const images = m.content.flatMap((p) => (p.type === "image_url" ? [p.image_url.url.replace(/^data:image\/[a-z0-9.+-]+;base64,/i, "")] : []));
+  return { role: m.role, content: text, ...(images.length ? { images } : {}) };
+}
+
+function fromOpenAI(payload: unknown): Omit<ChatResult, "model" | "endpoint"> {
+  const body = payload as {
+    choices?: { message?: { content?: string | null; tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] } }[];
+    usage?: ChatResult["usage"];
+    message?: { content?: string };
+  };
+  const message = (body.choices?.[0]?.message ?? body.message ?? {}) as { content?: string | null; tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] };
+  const content = typeof message.content === "string" ? message.content : "";
+  const toolCalls = (message.tool_calls ?? []).flatMap((c) => {
+    const name = String(c.function?.name || "");
+    if (!name) return [];
+    const args = c.function?.arguments;
+    return [{ id: c.id || `call_${name}`, name, arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}) }];
+  });
+  return { content, toolCalls, usage: body.usage };
+}
+
+function withToolHint(messages: ChatMessage[], tools: ToolDef[]): ChatMessage[] {
+  const names = tools.map((t) => t.function.name).join(", ");
+  const hint = `If you need a tool (${names}), reply with JSON only: {"tool":"<name>","arguments":{...}}`;
+  return [{ role: "system", content: hint }, ...messages];
+}
+
+/** A model that can't call tools sometimes still prints a JSON action. */
+export function looseToolCalls(text: string): ToolCall[] {
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) return [];
+  try {
+    const json = JSON.parse(match[0]) as { tool?: string; name?: string; arguments?: unknown; actions?: unknown };
+    if (Array.isArray(json.actions)) return [{ id: "call_loose", name: "computer", arguments: JSON.stringify({ actions: json.actions }) }];
+    const name = json.tool || json.name;
+    if (!name) return [];
+    return [{ id: "call_loose", name, arguments: JSON.stringify(json.arguments ?? {}) }];
+  } catch {
+    return [];
+  }
+}
+
+export async function embed(texts: string[], fetchImpl: typeof fetch = fetch): Promise<number[][]> {
+  const clean = texts.map((t) => t.slice(0, 8000));
+  const { value } = await withRole("embed", (attempt) => embedOn(attempt, clean, fetchImpl), { fetchImpl });
+  return value;
+}
+
+async function embedOn(attempt: Attempt, texts: string[], fetchImpl: typeof fetch): Promise<number[][]> {
+  assertLocalModel(attempt.model);
+  const headers = { "Content-Type": "application/json", ...authHeaders(attempt.endpoint) };
+  const base = attempt.endpoint.baseUrl.replace(/\/+$/, "");
+  const origin = originOf(attempt.endpoint.baseUrl);
+  const openai = await fetchImpl(`${base}/embeddings`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: attempt.model, input: texts }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (openai.ok) {
+    const json = (await openai.json()) as { data?: { embedding?: number[]; index?: number }[] };
+    const rows = (json.data ?? []).slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
+    if (rows.length === texts.length && rows.every((r) => Array.isArray(r.embedding))) return rows.map((r) => r.embedding as number[]);
+  }
+  const batch = await fetchImpl(`${origin}/api/embed`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ model: attempt.model, input: texts }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (batch.ok) {
+    const json = (await batch.json()) as { embeddings?: number[][] };
+    if (Array.isArray(json.embeddings) && json.embeddings.length === texts.length) return json.embeddings;
+  }
+  const out: number[][] = [];
+  for (const prompt of texts) {
+    const one = await fetchImpl(`${origin}/api/embeddings`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ model: attempt.model, prompt }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (!one.ok) throw new Error((await one.text()).slice(0, 300));
+    const json = (await one.json()) as { embedding?: number[] };
+    if (!Array.isArray(json.embedding)) throw new Error(`${attempt.model} returned no embedding`);
+    out.push(json.embedding);
+  }
+  return out;
+}
+
+export { CloudModelError };

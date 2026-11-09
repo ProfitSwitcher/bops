@@ -73,7 +73,7 @@ export type FullAccess = "on" | "off" | "not_yet";
 
 /** GET /api/members: who has access, or why the sheet can't say. */
 export type MembersInfo =
-  | { state: "self_hosted"; orgoUrl: string }
+  | { state: "self_hosted"; orgoUrl?: string }
   | { state: "signed_out"; why: "no_key" | "rejected" }
   | { state: "no_computers" }
   | {
@@ -83,8 +83,8 @@ export type MembersInfo =
        * else the default, whose "bops" one it falls back to. Its bots are the ones they can be given.
        */
       wsId: string;
-      /** The workspace on orgo.ai. */
-      orgoUrl: string;
+      /** The workspace on orgo.ai. Absent in local mode, which never links out. */
+      orgoUrl?: string;
       /** Where the bots work now: on this Mac, people the user adds never see its screens. */
       host: "orgo" | "mac";
       fullAccess: FullAccess;

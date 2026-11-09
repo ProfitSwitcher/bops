@@ -4,6 +4,7 @@ import WebSocket from "ws";
 import { appHeaders } from "./app-version";
 import { CloudError, cloudProxy } from "./cloud";
 import { usageTags } from "./usage";
+import { localOnly } from "@/lib/local/mode";
 
 /**
  * A task turn's Responses calls over one WebSocket (OpenAI's WebSocket mode): each step a
@@ -18,7 +19,7 @@ import { usageTags } from "./usage";
  * BOPS_RESPONSES_WS=0 turns it off.
  */
 
-export const responsesSocketOn = () => process.env.BOPS_RESPONSES_WS?.trim() !== "0";
+export const responsesSocketOn = () => !localOnly() && process.env.BOPS_RESPONSES_WS?.trim() !== "0";
 
 /** The socket itself failed (it wouldn't open, or closed mid-step): the step wasn't answered, so it can go over HTTP. */
 export class TransportError extends Error {}

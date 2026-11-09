@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import type { SlackLinkIn, SlackLinksBody, SlackLinksResult } from "@/cloud/protocol";
 import { pictureName } from "@/lib/mascot";
 import { botChatId, pairCodeLive, PAIR_CODE_MS, turnsOwn, type Bot, type ChannelKind, type ChannelLink, type ChannelPlace, type Message } from "@/lib/types";
+import { localOnly } from "@/lib/local/mode";
 import { cloudJson, cloudOn, cloudSession, cloudSessionNow } from "./cloud";
 import { deleteUserSecret, getUserSecret, setUserSecret } from "./keychain";
 import { composio, composioUser, publicUrl, runAs } from "./composio";
@@ -115,7 +116,7 @@ export function stopChannels() {
 
 /** Start every channel's listener. Safe to call again: running ones are left alone. */
 export function startChannels() {
-  if (!stateReady() || !loopHere("channels")) return;
+  if (localOnly() || !stateReady() || !loopHere("channels")) return;
   for (const l of linksOf("telegram")) if (!live.telegram.has(l.id)) void pollTelegram(l.id);
   for (const l of linksOf("discord")) if (!live.discord.has(l.id)) void connectDiscord(l.id);
   // Signed in with Orgo, Slack's events come through Bops Cloud (which never passes Composio's live

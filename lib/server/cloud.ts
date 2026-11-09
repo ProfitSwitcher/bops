@@ -7,6 +7,7 @@ import { cloudKey, loadOrgoKey, orgoKey } from "./orgo-auth";
 import { onPostgres } from "./persist";
 import { getState, update } from "./store";
 import { isIdentityToken, vmIdentityRejected } from "./vm-identity";
+import { localOnly } from "@/lib/local/mode";
 
 /**
  * Bops Cloud (cloud/README.md): the server Orgo runs so that Orgo's provider keys never sit on a
@@ -27,7 +28,7 @@ import { isIdentityToken, vmIdentityRejected } from "./vm-identity";
 export { cloudUrl };
 
 /** Whether services go through Bops Cloud: signed in with Orgo, in the app on a Mac, and not self-hosting. */
-export const cloudOn = () => !!orgoKey() && process.env.BOPS_SELF_HOSTED !== "1" && !onPostgres();
+export const cloudOn = () => !localOnly() && !!orgoKey() && process.env.BOPS_SELF_HOSTED !== "1" && !onPostgres();
 
 /**
  * A call to Bops Cloud that didn't work, in words the app can show. `status` is the cloud's HTTP status

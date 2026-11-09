@@ -128,6 +128,7 @@ function LiveStream({
   // How far the connection has got, for the loading state: reaching the computer, opening the
   // stream, or getting it back after a drop. "slow" once it has taken longer than usual.
   const [stage, setStage] = useState<"reaching" | "opening" | "reconnecting">("reaching");
+  const [localNote, setLocalNote] = useState<string | null>(null);
   const [slow, setSlow] = useState(false);
   const failed = useRef(onFail);
   const sized = useRef(onSize);
@@ -212,8 +213,18 @@ function LiveStream({
     let gone = false;
     void (async () => {
       const res = await fetch(planUrl ?? `/api/vnc?bot=${botId}&display=${display}`, { cache: "no-store" });
-      if (!res.ok) throw new Error("no plan");
-      const p = (await res.json()) as StreamPlan;
+      const body = (await res.json().catch(() => null)) as (StreamPlan & { error?: string; local?: boolean }) | null;
+      if (!res.ok) {
+        if (body?.local) {
+          if (!gone) {
+            setLocalNote(body.error ?? "This screen stays on this Mac. The local worker takes screenshots.");
+            fail(true);
+          }
+          return;
+        }
+        throw new Error("no plan");
+      }
+      const p = body as StreamPlan;
       if (gone) return;
       const tryRtc = !thumbnail && !!p.rtc && rtcWorthTrying(p.rtc);
       if (!tryRtc && !p.vnc) throw new Error("no stream");
@@ -353,7 +364,7 @@ function LiveStream({
           className={`pointer-events-none absolute ${thumbnail ? "inset-x-0 top-0 block h-auto w-full" : "inset-0 h-full w-full object-contain"} ${stilled ? "" : "invisible"}`}
         />
       )}
-      {!connected && !(quiet && !slow) && !(stilled && (resting || !slow)) && <Waking thumbnail={!!thumbnail} bot={bot} text={stage === "reconnecting" ? "Reconnecting…" : slow ? "Taking a little longer than usual…" : stage === "opening" ? "Opening the screen…" : bot ? `Reaching ${bot.name}'s computer…` : "Reaching the computer…"} />}
+      {!connected && !(quiet && !slow) && !(stilled && (resting || !slow)) && <Waking thumbnail={!!thumbnail} bot={bot} text={localNote ?? (stage === "reconnecting" ? "Reconnecting…" : slow ? "Taking a little longer than usual…" : stage === "opening" ? "Opening the screen…" : bot ? `Reaching ${bot.name}'s computer…` : "Reaching the computer…")} />}
     </div>
   );
 }

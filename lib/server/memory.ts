@@ -2,6 +2,10 @@ import "server-only";
 import { LIGHT } from "./routing";
 import { setting } from "./models";
 import { Honcho, Session as HonchoSessionRef, type Peer, type Session as HonchoSession } from "@honcho-ai/sdk";
+import { localOnly } from "@/lib/local/mode";
+import { chatStage, localNeedsMemory } from "@/lib/local/fast-chat";
+import { addFacts, asThirdPerson, closestFact, listFacts, sameFact } from "@/lib/local/memory-store";
+import { localBank } from "@/lib/local/honcho-local";
 import { openaiClient } from "./openai-client";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -30,7 +34,7 @@ import { recordTokens, usageTags } from "./usage";
  * there carries the user's own prefix (bankFor).
  */
 
-const on = () => (cloudOn() ? !!cloudSessionNow()?.honcho : !!process.env.HONCHO_API_KEY);
+const on = () => (localOnly() ? process.env.BOPS_LOCAL_MEMORY !== "0" : cloudOn() ? !!cloudSessionNow()?.honcho : !!process.env.HONCHO_API_KEY);
 /** Facts out of a message: a small job of a fixed shape, for Luna (routing.ts LIGHT). */
 const MODEL = () => setting(LIGHT(), "BOPS_MEMORY_MODEL");
 
@@ -146,7 +150,14 @@ const live: Live = (g.bopsMemory2 ??= { banks: new Map(), privacy: new Map(), ki
  * only ones the cloud lets them reach. The SDK resolves its paths ("/v3/…") against the host alone,
  * so the cloud's /proxy/honcho is put in front of each.
  */
+const localBanks = new Map<string, ReturnType<typeof localBank>>();
+
 function bankFor(b: Binding) {
+  if (localOnly()) {
+    let found = localBanks.get(b.bank);
+    if (!found) localBanks.set(b.bank, (found = localBank(b.bank)));
+    return found as unknown as Bank;
+  }
   const via = cloudProxy("honcho");
   const prefix = via ? cloudSessionNow()?.honcho?.workspacePrefix : undefined;
   if (via && !prefix) throw new Error("Memory isn't available right now.");
@@ -377,6 +388,7 @@ export function learn(where: Where, fact: string, chatId?: string, opts: { auto?
   const ours = sameState();
   const run = x.queue.then(async () => {
     if (!ours()) return "Not saved: another account signed in.";
+    if (localOnly()) return saveLocalFact(b, sc, text, chatId, ours);
     const p = await peer(b);
     const [near, lines] = await Promise.all([p.conclusions.query(text, 6).catch(() => []), card(b).catch(() => [] as string[])]);
     x.recent = x.recent.filter((r) => Date.now() - r.at < 10 * 60_000);
@@ -406,6 +418,25 @@ export function learn(where: Where, fact: string, chatId?: string, opts: { auto?
   });
   x.queue = run.catch(() => {});
   return run;
+}
+
+/** Save one local fact without a relation model. Duplicates are dropped by wording or embedding. */
+async function saveLocalFact(b: Binding, sc: MemoryScope, text: string, chatId: string | undefined, ours: () => boolean): Promise<string> {
+  const name = ownerName();
+  const text3 = asThirdPerson(text, name);
+  const embedAt = Date.now();
+  const hit = await Promise.race([closestFact(b.bank, text3).catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 4000))]);
+  chatStage("remember-embed", embedAt, hit ? `score=${hit.score.toFixed(2)}` : "none");
+  const listed = listFacts(b.bank, { limit: 40 }).map((f) => f.content);
+  const dup = (hit && hit.score >= 0.84 ? hit.content : undefined) ?? listed.find((c) => sameFact(c, text3, name));
+  if (dup) return `Already known: ${dup}`;
+  if (!ours()) return "Not saved: another account signed in.";
+  const writeAt = Date.now();
+  const [made] = await addFacts(b.bank, [{ content: text3 }], { embedMs: 4000 });
+  chatStage("remember-write", writeAt);
+  const ws = sc.ws;
+  if (chatId && ours()) addMessage({ chatId, role: "system", text: `Remembered: ${text3}`, memory: { ws, ...(sc.bot ? { bot: sc.bot } : {}), id: made.id, fact: text3 } });
+  return "Saved.";
 }
 
 /** A workspace's notes session in a bank (made once): nothing in it is ever worked out into facts. */
@@ -493,6 +524,11 @@ export function rememberMessage(ws: Where, chatId: string, messageId: string, sa
     saveToMemory(ws, "chat", chatId, [{ who: memberWho(member), text: said }], metadata);
     return;
   }
+  // Local mode stores the line now. Fact writing waits until the reply is posted (rememberAfterReply), on the fast model.
+  if (localOnly()) {
+    saveToMemory(ws, "chat", chatId, [{ who: OWNER_WHO, text: said }], metadata);
+    return;
+  }
   // The account whose message this is: a sign-out or another account's sign-in meanwhile, and nothing of it goes into the new one's memory.
   const ours = sameState();
   const epoch = stateEpoch();
@@ -531,6 +567,48 @@ export function rememberMessage(ws: Where, chatId: string, messageId: string, sa
       .slice(0, 3);
     for (const f of facts) if (ours()) await learn(ws, f, chatId, { auto: true });
   })().catch((e: Error) => console.warn(`[memory] auto-remember: ${e.message}`));
+}
+
+/**
+ * After the reply is already on screen: a fast-model pass that writes lasting facts.
+ * It does not run before the reply, so it does not compete with the planner.
+ */
+export function rememberAfterReply(where: Where, chatId: string, said: string, opts: { skip?: boolean } = {}) {
+  if (!localOnly() || !on() || !said.trim()) return;
+  if (opts.skip) {
+    chatStage("memory-facts", Date.now(), "skip");
+    return;
+  }
+  const started = Date.now();
+  void (async () => {
+    const judge = localNeedsMemory(said);
+    chatStage("memory-judge", started, judge ? "yes" : "no");
+    if (!judge) return;
+    const writeAt = Date.now();
+    const { chat } = await import("@/lib/local/provider");
+    const result = await chat({
+      role: "fast",
+      messages: [
+        { role: "system", content: "Write each lasting fact in the third person, one short sentence per line, at most three. Never first person. If there is no lasting fact, write NONE." },
+        { role: "user", content: said.slice(0, 1500) },
+      ],
+    });
+    const name = ownerName();
+    const bank = bindingOf(scopeIn(where)).bank;
+    const facts = result.content
+      .split("\n")
+      .map((l) => asThirdPerson(l.replace(/^[-*•\d.)\s]+/, "").trim(), name))
+      .filter((l) => l && l !== "NONE" && l.length < 400)
+      .slice(0, 3);
+    const fresh: string[] = [];
+    for (const fact of facts) {
+      const hit = await closestFact(bank, fact).catch(() => null);
+      if ((hit && hit.score >= 0.84) || listFacts(bank, { limit: 40 }).some((f) => sameFact(f.content, fact, name))) continue;
+      fresh.push(fact);
+    }
+    chatStage("memory-facts", writeAt, `kept=${fresh.length}`);
+    if (fresh.length) await addFacts(bank, fresh.map((content) => ({ content, sessionId: `bops-chat-${chatId}` })), { embedMs: 4000 });
+  })().catch((e: Error) => console.warn(`[memory] after reply: ${e.message}`));
 }
 
 /** Take back a fact the chat said was remembered, or forget the older fact it replaced. */
@@ -1031,7 +1109,11 @@ const rowOf = (c: { id: string; content: string; createdAt: string; sessionId: s
 });
 
 /** A session by its id, without asking memory for it (or making it). */
-export const sessionRef = (client: Honcho, id: string) => new HonchoSessionRef(id, client.workspaceId, client.http);
+export const sessionRef = (client: Honcho, id: string) => {
+  const local = client as unknown as { localSession?: (id: string) => { delete: () => Promise<void> } };
+  if (local.localSession) return local.localSession(id);
+  return new HonchoSessionRef(id, client.workspaceId, client.http);
+};
 
 const notFound = (e: unknown) => (e as { status?: number }).status === 404;
 

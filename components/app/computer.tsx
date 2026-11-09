@@ -6,6 +6,7 @@ import { freeComputerOpen, ownIsBops, setupShort } from "@/lib/orgo-plans";
 import { BotBrowser } from "./bot-browser";
 import { BotCursor } from "./bot-cursor";
 import { LiveDesktop, Waking } from "./live-desktop";
+import { useLocalOnly } from "./local-mode";
 import { LiveScreen, type ScreenInput } from "./live-screen";
 import { MirrorScreen, type MirrorTab } from "./mirror-screen";
 import { ReaderView } from "./reader-view";
@@ -1050,8 +1051,13 @@ function ResetMenu({ state, bot: b, screen, busy }: { state: AppState; bot: Bot;
     setConfirm(null);
     setRunning(true);
     setNote("Resetting…");
-    const j = (await (await post("/api/computer/reset", { botId: b.id, ...body })).json()) as { results?: Result[]; error?: string };
+    const res = await post("/api/computer/reset", { botId: b.id, ...body });
+    const j = (await res.json().catch(() => ({}))) as { results?: Result[]; error?: string };
     setRunning(false);
+    if (!res.ok) {
+      setNote(j.error ?? "The reset didn't finish.");
+      return;
+    }
     const rs = j.results ?? [];
     const done = rs.reduce((n, r) => n + r.reset.length, 0);
     const skipped = rs.flatMap((r) => r.skipped.map((x) => `${rs.length > 1 ? `${r.name}'s ` : ""}screen ${x.screen} (${x.why.charAt(0).toLowerCase()}${x.why.slice(1)})`));
@@ -1299,6 +1305,8 @@ function NoComputer({ state, bot: b, host }: { state: AppState; bot: Bot; /** Th
 
 /** The workspace on orgo.ai, where its computers are too: opened in the browser. */
 function OrgoLink({ href, label }: { href: string; label: string }) {
+  const local = useLocalOnly();
+  if (local) return null;
   return (
     <a href={href} target="_blank" rel="noreferrer" className="rounded-full px-2.5 py-1 text-[13px] font-medium leading-4 text-ink shadow-[0_0_0_1px_#E6E6E3] hover:bg-black/[0.04]">
       {label}
@@ -1380,6 +1388,7 @@ function SharedScreen({ state, bot: b }: { state: AppState; bot: Bot }) {
 /** The computer itself, for the bot's Details: where it came from and how it's running. */
 export function ComputerSummary({ state, bot: b, className = "", onOpen }: { state: AppState; bot: Bot; className?: string; onOpen?: () => void }) {
   // This Mac's browsers are the viewer's own app's: a shared workspace's bot never works there (state.host is the viewer's).
+  const local = useLocalOnly();
   const mac = !state.shared && state.host === "mac";
   const c = mac ? b : workBot(b, state.bots);
   const { info } = useComputer(b.id, mac ? undefined : c.computerId, !mac && computerInUse(state, onComputerOf(state, c)));
@@ -1395,7 +1404,9 @@ export function ComputerSummary({ state, bot: b, className = "", onOpen }: { sta
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="text-[13px] font-semibold leading-4">Computer</span>
         <span className="truncate text-[12px] leading-4 text-[#6B6B6B]">
-          {mac
+          {local
+            ? "The local worker on this Mac"
+            : mac
             ? "Browsers on this Mac"
             : state.shared && b.runsOn === "mac"
               ? `Works on ${yourMac(state)}`

@@ -37,6 +37,7 @@ import { YourComputer } from "./computer-size";
 import { Mascot, Spinner } from "./mascot";
 import { signOutOfOrgo as signOutAsking, UNSENT } from "./sign-in";
 import { AskInPlace, refreshState } from "./ui";
+import { useLocalOnly } from "./local-mode";
 
 /*
  * The account: who you are on Orgo, what you pay for Bops and the credit left when Orgo says, what your
@@ -131,7 +132,9 @@ export function useAccountInfo() {
 
 /** Settings, Account, Plan and credit: your Bops plan and credit, and your bots' inboxes and numbers. */
 export function PlanAndCredit({ state }: { state: AppState }) {
+  const local = useLocalOnly();
   const { info, loading, failed, setBops } = useAccountInfo();
+  if (local) return null;
   const user = info?.user ?? state.account?.user ?? null;
   return (
     <>
@@ -142,7 +145,7 @@ export function PlanAndCredit({ state }: { state: AppState }) {
           <Placeholder title="Your plan" />
         )
       ) : (
-        <Notice>Sign in with Orgo to see your plan.</Notice>
+        <Notice>{local ? "Plans and Orgo credit are off. This Bops runs on your machines." : "Sign in with Orgo to see your plan."}</Notice>
       )}
       {info && <Reach info={info} />}
     </>
@@ -297,8 +300,10 @@ function Lines({ lines }: { lines: PlanLine[] }) {
  * won't wake it: the sheet says so.
  */
 function OrgoBalance({ usage }: { usage: UsageTerms }) {
+  const local = useLocalOnly();
   const out = !canWake(usage);
   const add = () => {
+    if (local) return;
     trackEvent("bops_add_credit_clicked", { surface: "account" });
     window.open(usage.topUpUrl, "_blank");
   };
@@ -318,11 +323,13 @@ function OrgoBalance({ usage }: { usage: UsageTerms }) {
           You&apos;re out of Orgo credit, so your bots are paused and your computer stays asleep. Add credit to keep them going.
         </span>
       )}
+      {!local && (
       <div className="flex border-t border-[#F0F0EE] px-4 py-3">
         <button onClick={add} className="rounded-full bg-ink px-3 py-1.5 text-[12.5px] font-medium leading-4 text-white">
           Add credit on Orgo
         </button>
       </div>
+      )}
     </div>
   );
 }
@@ -332,6 +339,7 @@ function OrgoBalance({ usage }: { usage: UsageTerms }) {
  * credit pays for what the bots do (models, calls, texts) at what it costs Orgo.
  */
 function BopsPlans({ plan, known, onPlan, userId }: { plan: BopsPlan | null | undefined; known: boolean; onPlan: (plan: BopsPlan) => void; userId: string }) {
+  const local = useLocalOnly();
   const [busy, setBusy] = useState<Open | null>(null);
   // What the last button said, under it: "Upgrades open soon." is a note, anything else an error.
   const [said, setSaid] = useState<{ what: Open; text: string; soon: boolean } | null>(null);
@@ -339,6 +347,7 @@ function BopsPlans({ plan, known, onPlan, userId }: { plan: BopsPlan | null | un
   const current: BopsTier | null = known ? (plan?.tier ?? null) : null;
   /** Open Orgo's page for it in the browser: checkout for a plan, or the billing page. */
   const open = async (what: Open) => {
+    if (local) return;
     setBusy(what);
     setSaid(null);
     try {
@@ -388,7 +397,7 @@ function BopsPlans({ plan, known, onPlan, userId }: { plan: BopsPlan | null | un
               </div>
               <ComputerBox title={p.computers.title} detail={p.computers.detail} />
               <Lines lines={p.lines} />
-              {a && (
+              {a && !local && (
                 <div className="flex flex-col gap-1.5">
                   <button
                     disabled={!!busy}
@@ -562,6 +571,7 @@ type Note =
  * reload.
  */
 function AddCredit({ plan, topUp, onPlan, userId }: { plan: BopsPlan; topUp: TopUp; onPlan: (plan: BopsPlan) => void; userId: string }) {
+  const local = useLocalOnly();
   const { info, setInfo, read, answered } = topUp;
   const [choice, setChoice] = useState<number | "other" | null>(null);
   const [other, setOther] = useState("");
@@ -624,7 +634,7 @@ function AddCredit({ plan, topUp, onPlan, userId }: { plan: BopsPlan; topUp: Top
     } finally {
       setOpening(false);
     }
-    if (typeof said.url === "string") {
+    if (typeof said.url === "string" && !local) {
       window.open(said.url, "_blank");
       keep(userId, null);
       setPurchase(null);
@@ -736,6 +746,7 @@ function AddCredit({ plan, topUp, onPlan, userId }: { plan: BopsPlan; topUp: Top
     setPurchase(afterCancel);
   };
 
+  if (local) return null;
   if (note?.kind === "off") return <span className="border-t border-[#F0F0EE] px-4 py-3 text-[12.5px] leading-[18px] text-[#6B6B6B]">Adding credit opens soon.</span>;
 
   // Credit the balance shows is in, however it was paid.

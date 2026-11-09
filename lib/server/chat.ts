@@ -5,7 +5,7 @@ import { accessOf, adminAccess, appsLevelOf, levelOf, permits, type AccessLevel,
 import { setting } from "./models";
 import { trackServerEvent } from "./analytics";
 import { fullAccessOn } from "./full-access";
-import { isSecret, learn, memoryBlock, memoryOn, recall, rememberMessage, saveToMemory, scopeOf, wsOf } from "./memory";
+import { isSecret, learn, memoryBlock, memoryOn, recall, rememberAfterReply, rememberMessage, saveToMemory, scopeOf, wsOf } from "./memory";
 import { APP_TOOLS, findAppActions, runAppAction } from "./composio";
 import { askForKey, askForKeyTool, callApi, callApiTool, keyProvider, usableKeys } from "./keys";
 import { changeFiles, changeFilesTool } from "./repo-change";
@@ -17,6 +17,9 @@ import { CRM_TOOL_NAMES, CRM_TOOLS, crmNote, crmNowLine, runCrmTool } from "./cr
 import { ORBIT_OWNER_ONLY, ORBIT_TOOL_NAMES, ORBIT_TOOLS, orbitNote, orbitNowLine, runOrbitTool } from "./orbit";
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { openaiClient } from "./openai-client";
+import { answerRoute } from "@/lib/local/responses";
+import { localOnly } from "@/lib/local/mode";
+import { chatClock, chatStage, isSimpleLocalChat, stripImitatedDeeds, taskFromPromise } from "@/lib/local/fast-chat";
 import { contactLine, createBot, namesTheUser } from "./bots";
 import { creditsOut, noteOutOfCredit, outOfCreditWords } from "./cloud";
 import { noOwnComputer } from "./plan";
@@ -527,7 +530,7 @@ const ofApps = (m: Message, apps: ReadonlySet<string>) =>
  * doesn't read texts from strangers at all: there's no tool for them, so "who texted today" is for the
  * user's own turn, which sees them. What fell out of its latest messages comes first, summed up (chat-summary.ts).
  */
-function history(chatId: string, selfId: string | undefined, opts: { unattended?: boolean; noApps?: boolean } = {}) {
+function history(chatId: string, selfId: string | undefined, opts: { unattended?: boolean; noApps?: boolean; thread?: string } = {}) {
   // On a member's turn without apps (TurnOptions.member, not Orgo's team): nothing of the owner's app threads, as
   // their own window has none of it (cloud/ws-slice.ts sharedMessage), so the bot can't read it back to them.
   const apps = opts.noApps ? appThreads() : undefined;
@@ -540,7 +543,7 @@ function history(chatId: string, selfId: string | undefined, opts: { unattended?
   // The computer the bot reading this works on: files added on it are on "your computer's" Desktop, others named.
   const readerHost = filesHostOf(selfId);
   const ownerLast = opts.unattended ? all.findLastIndex(fromOwner) : -1;
-  const said = all.filter((m, i) => heard(m) && !(opts.unattended && fromOutside(m) && i > ownerLast));
+  const said = all.filter((m, i) => heard(m) && !(opts.unattended && fromOutside(m) && i > ownerLast) && (!opts.thread || m.id === opts.thread || m.replyTo === opts.thread));
   const read = windowOf(chatId, said);
   return [
     ...(read.summary ? [{ role: "user" as const, content: soFar(read.summary) }] : []),
@@ -590,7 +593,8 @@ function history(chatId: string, selfId: string | undefined, opts: { unattended?
       // What the bot did for this reply (not in its words): who it asked and what they said, the
       // tasks it started, the task this is the result of. Without it a bot can't say why it did
       // something and makes up a reason.
-      const did = m.role === "bot" ? deeds(m) : "";
+      // Local mode keeps the deed off the assistant text. The model was copying "[What was done: started the task …]" instead of calling start_task.
+      const did = m.role === "bot" && !localOnly() ? deeds(m) : "";
       // What Select picked on an app's page, in the owner's words: where each is in the page's code (Message.picks).
       const code = m.picks?.length ? ` [Bops: in the page's code, ${m.picks.map((p) => `${p.line} is ${p.code}`).join("; ")}]` : "";
       // Files the user added with it (Message.files): where they are, for the bot to open (on its computer, or another's).
@@ -657,6 +661,8 @@ export async function handleMessage(
   const root = target ? (target.replyTo ?? target.id) : undefined;
   const app = lookingAt && madeApp(lookingAt) ? lookingAt : undefined;
   const mine = addMessage({ chatId, role: "user", text, replyTo: root, images: images?.length ? images : undefined, files: files?.length ? files : undefined, via, phone, channel, lookingAt: app, ...(member ? { member: saidOf(member) } : {}), ...(agent && !member && /^[A-Za-z0-9_]{1,40}$/.test(agent) ? { agent } : {}), ...(appNote && !member ? { appNote: true as const } : {}), ...(appNote && !member && picks?.length ? { picks } : {}) });
+  chatClock(mine.at);
+  chatStage("received", mine.at);
   trackServerEvent("bops_message_sent", { chat_kind: c.kind, via: onCall ? "call" : (via ?? "app"), image_count: images?.length ?? 0, is_reply: !!root });
   // Into the shared memory (unless the user wants it kept from someone), and remembered if it's a lasting fact. A
   // member's words go in as theirs, so nothing they say about themselves is taken for the owner.
@@ -897,6 +903,25 @@ async function continueThread(chatId: string, text: string, replyTo?: string, me
   const ours = sameState();
   const threads = followUpThreads(chatId, member);
   if (!threads.length) return false;
+  if (localOnly() && isSimpleLocalChat(text)) return false;
+  // A model read here runs before the reply and is not part of the timed turn. Locally, only a
+  // direct reply to a thread's message continues it. Everything else, including "remember…", goes to the bot at once.
+  if (localOnly()) {
+    const t0 = Date.now();
+    const root = replyTo ? getState().messages.find((m) => m.id === replyTo && m.chatId === chatId) : undefined;
+    const target = root ? threads.find((s) => isAbout(root, s)) : undefined;
+    chatStage("continue-thread", t0, target ? "reply" : "skip");
+    if (!target) return false;
+    if (mentionsMac(text) && target.runsOn !== "mac" && getState().mac?.ready) return false;
+    if (!ours()) return true;
+    replyToSession(target.id, text, undefined, undefined, member ? saidOf(member) : undefined);
+    const c = chat(chatId)!;
+    const speaker = c.kind === "bot" ? c.botIds[0] : target.botId;
+    const owner = bot(target.botId);
+    const said = await acknowledge(bot(speaker), text, target.title, speaker === target.botId ? undefined : owner?.name);
+    if (ours()) addMessage({ chatId, role: "bot", botId: speaker, text: said, sessionIds: [target.id] });
+    return true;
+  }
   // Where apps on the web are open: work on one is the chat's to start (work_on_app), as only a thread on that app
   // (Session.app) has its working folder, so Jev is told which app each thread is on. "Work on the app recipe-box"
   // right after a plain task about it that couldn't (it had no folder) went to that task, which can't call work_on_app.
@@ -1061,7 +1086,7 @@ async function askTeammate(asker: Bot, toId: string, question: string, chatId: s
     stillOurs(ours);
     recordTokens("chat", res.model, res.usage, t.id);
     const answer = tidyAnswer(res.output_text ?? "").text.trim() || "I don't know.";
-    addMessage({ chatId: pair, role: "bot", botId: t.id, text: answer });
+    addMessage({ chatId: pair, role: "bot", botId: t.id, text: answer, ...modelOn(res.id) });
     asked.push({ botId: t.id, question: question.trim(), answer, questionId: q.id });
     return `${t.name} says: ${answer}`;
   } finally {
@@ -1977,6 +2002,11 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
   // A turn someone else started: who it came from, for what it passes on and starts (sessions.ts StartOptions.outside).
   const outsideFrom = opts.outside ? (opts.from ?? "someone outside Bops") : undefined;
   if (!bg) setTyping(chatId, botId, true);
+  let simpleLocal = false;
+  const turnAt = Date.now();
+  const askedStamp = opts.answering ? getState().messages.find((m) => m.id === opts.answering && m.chatId === chatId)?.at : undefined;
+  if (askedStamp) chatClock(askedStamp);
+  chatStage("turn-start", askedStamp ?? turnAt);
   try {
     // Its teammates: the ones it may ask on the team chart (lib/chain.ts: everyone, without one), and on a member's
     // turn only the ones they see (Read or Write) too. A bot it may not ask, or not given them, stays hidden: in what
@@ -2017,9 +2047,66 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     // Someone's waiting on this reply: the user's own message, in the app, by text or in a channel (not
     // an email, which nobody expects back in seconds, or a turn someone else started). It runs fast.
     const waiting = !!opts.answering && !opts.outside && !opts.emailBack;
-    const base: Config = { model: CHAT_MODEL, effort: CHAT_REASONING.effort };
+    const answeringMessage = opts.answering ? getState().messages.find((m) => m.id === opts.answering && m.chatId === chatId) : undefined;
+    if (answeringMessage && !bg) {
+      const already = getState().messages.some((m) => m.chatId === chatId && m.role === "bot" && m.replyTo === answeringMessage.id);
+      const newer = getState().messages.some((m) => m.chatId === chatId && m.role === "user" && m.id !== answeringMessage.id && m.at > answeringMessage.at && (m.replyTo ?? undefined) === (answeringMessage.replyTo ?? undefined));
+      if (already || newer) return { text: null };
+    }
+    const botEffort = b.effort;
+    const effortFloor = botEffort === "high" ? "high" : CHAT_REASONING.effort;
+    const base: Config = { model: CHAT_MODEL, effort: effortFloor };
+    const askedText = (answeringMessage?.text ?? lastAsk?.text ?? "").trim();
+    const usersHere = getState().messages.filter((m) => m.chatId === chatId && m.role === "user");
+    const askedAt = usersHere.findIndex((m) => m.id === (answeringMessage?.id ?? lastAsk?.id));
+    const prevUser = askedAt > 0 ? usersHere[askedAt - 1] : undefined;
+    const imageFollowUp = !!prevUser?.images?.length && !!lastAsk && lastAsk.at - prevUser.at < 15 * 60 * 1000;
+    simpleLocal =
+      !bg &&
+      !opts.outside &&
+      !opts.resume &&
+      !opts.group?.length &&
+      !member &&
+      localOnly() &&
+      isSimpleLocalChat(askedText, {
+        images: !!(answeringMessage?.images?.length || lastAsk?.images?.length || imageFollowUp),
+        files: !!(answeringMessage?.files?.length || lastAsk?.files?.length),
+        thread: !!(answeringMessage?.replyTo || lastAsk?.replyTo),
+      });
+    if (simpleLocal) {
+      chatStage("simple-start", turnAt, `chars=${askedText.length}`);
+      const { chat } = await import("@/lib/local/provider");
+      const recent = getState()
+        .messages.filter((m) => m.chatId === chatId && (m.role === "user" || m.role === "bot") && m.text.trim() && !m.secret)
+        .slice(-6)
+        .map((m) => ({ role: (m.role === "bot" ? "assistant" : "user") as "assistant" | "user", content: m.text.slice(0, 600) }));
+      const role = effortFloor === "high" ? ("heavy" as const) : ("planner" as const);
+      const result = await chat({
+        role,
+        messages: [{ role: "system", content: `You are ${b.name}, a local assistant on this Mac. Reply in one or two short sentences.` }, ...recent],
+      });
+      chatStage("simple-model", turnAt, `role=${role} prompt=${recent.reduce((n, m) => n + m.content.length, 0)}`);
+      const text = result.content.trim() || "The local model returned an empty reply.";
+      rememberAfterReply(scopeOf(botId), chatId, askedText);
+      addMessage({
+        chatId,
+        role: "bot",
+        botId,
+        text,
+        replyTo: answeringMessage ? answeringMessage.replyTo : opts.replyTo,
+        model: { id: result.model, endpoint: result.endpoint, ...(result.cloud ? { cloud: true } : {}) },
+      });
+      return { text };
+    }
     // How much thinking the message needs (routing.ts routeChat: Jev, alongside what's below). Only the user's own.
-    const routing = waiting ? routeChat(base, lastWords(chatId), botId).catch(() => ({ config: base })) : Promise.resolve({ config: base });
+    const routing = waiting
+      ? routeChat(base, lastWords(chatId), botId)
+          .then((r) => {
+            chatStage("route", turnAt);
+            return r;
+          })
+          .catch(() => ({ config: base }))
+      : Promise.resolve({ config: base });
     // Whether a new bot could have a computer of its own on the user's Orgo plan, so the main bot doesn't promise one.
     // Read quickly or not at all: createBot checks again anyway. Not asked when the bots work on this Mac.
     const noOwnRoom =
@@ -2468,7 +2555,23 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       .join("\n");
     // What memory is searched for: the user's latest words, or a routine's job.
     const about = bg ? bg.goal : lastWords(chatId);
+    const memoryPromise = member
+      ? Promise.resolve("")
+      : localOnly()
+        ? (async () => {
+            const t = Date.now();
+            const block = await memoryBlock(scopeOf(botId), about, 800, { search: false });
+            chatStage("memory-search", t, "card");
+            return block;
+          })()
+        : needsMemory(about).then(async (search) => {
+            const t = Date.now();
+            const block = await memoryBlock(scopeOf(botId), about, 2500, { search });
+            chatStage("memory-search", t, search ? "search" : "card");
+            return block;
+          });
     const now = [
+      localOnly() ? "Do not write a line like [What was done: ...]. That note is not how work starts. Call start_task to start a task." : "",
       ...nowLines(b),
       // (On a member's turn, another bot's work on a shared screen is named only when they see that bot.)
       await computerBriefing(botId, member ? { sees: (id) => memberLevel(member, id) !== "none" } : {}).catch(() => ""),
@@ -2526,7 +2629,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       // What's known about the user (Honcho), for what they just said (or what the routine is about).
       // Searched only when knowing the user helps with it (Jev); small talk and plain commands skip it.
       // Not on a member's turn: what's known about the owner is the owner's own (NOT_FROM_MEMBER has no recall either).
-      member ? "" : await memoryBlock(scopeOf(botId), about, 2500, { search: await needsMemory(about) }),
+      await memoryPromise,
     ].filter(Boolean);
     // Going on from a pause for the user's OK: the same turn, on the response it paused in, with what it had then.
     const resumed = opts.resume?.resume?.engine === "chat" ? opts.resume.resume : undefined;
@@ -2581,6 +2684,8 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     // The API calls made with the user's keys, kept on the reply (Message.called) and said in the chat.
     const called: string[] = [];
     type Args = Record<string, unknown> & { query?: string; action?: string; arguments?: Record<string, unknown>; fact?: string; question?: string };
+    let remembered = false;
+    let forcedReply: string | undefined;
     /**
      * One lookup's answer for the model: what it found, did or couldn't do, in plain words. Every name in LOOKUPS
      * has its branch. `bring` takes what it brought in from outside (a page read, an email that came, what an app
@@ -2595,7 +2700,13 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       if (CRM_TOOL_NAMES.has(name)) readFrom.add("Your CRM");
       if (ORBIT_TOOL_NAMES.has(name)) readFrom.add("Knowledge");
       // Into and out of its memory scope: its own bank while it keeps its memory to itself (lib/chain.ts).
-      if (name === "remember") return learn(scopeOf(botId), a.fact ?? "", chatId).catch(failed);
+      if (name === "remember") {
+        remembered = true;
+        const t = Date.now();
+        const out = await learn(scopeOf(botId), a.fact ?? "", chatId).catch(failed);
+        chatStage("remember-tool", t);
+        return out;
+      }
       if (name === "recall") return recall(scopeOf(botId), a.question ?? "").catch(failed);
       // A dear lookup, an email to someone else, a call that changes something with one of the user's keys, an app
       // action that changes something: each asks the user (NeedsOk) unless the bot's rules allow it, and the turn
@@ -2835,13 +2946,16 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
         notes.push(key ? `${key.label} key ${/^Change /.test(opts.resume.action) ? "unchanged" : "not added"}${opts.resume.reply.message ? `: ${why}` : ""}` : `${b.name} didn't do it: ${why}`);
       }
       response = await create([...resumed.outputs.map((o) => ({ type: "function_call_output" as const, call_id: o.callId, output: o.output })), { type: "function_call_output" as const, call_id: resumed.callId, output: out }], resumed.responseId);
-    } else
+    } else {
+      const prior = history(chatId, botId, { unattended: !!bg, noApps: !!member && !apps, thread: answeringMessage?.replyTo });
       response = await create([
-        ...history(chatId, botId, { unattended: !!bg, noApps: !!member && !apps }),
+        ...(localOnly() ? prior.slice(-8) : prior),
         { role: "developer" as const, content: `As of now (from Bops, not ${owner}):\n${now.join("\n")}` },
         // A routine's run: the job, last, as a note from Bops.
         ...(bg ? [{ role: "developer" as const, content: jobNote(b, bg, offered.has("draft_reply")) }] : []),
       ]);
+      chatStage("model", turnAt);
+    }
     stillOurs(ours);
     recordTokens("chat", response.model, response.usage, botId);
     sawWeb(response.output);
@@ -2914,11 +3028,18 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
         return { text: null, paused: true };
       }
       outOfSteps = round === rounds - 1;
+      const roundAt = Date.now();
+      if (localOnly() && calls.length && calls.every((c) => c.name === "remember") && !rest.some((c) => c.name !== "remember")) {
+        chatStage("model-round", roundAt, "skip");
+        forcedReply = outputs.map((o) => (typeof o.output === "string" ? o.output : "Saved.")).join(" ") || "Saved.";
+        break;
+      }
       response = await create(
         [...answers.map((x) => ({ type: "function_call_output" as const, ...x })), ...(outOfSteps ? [{ role: "developer" as const, content: OUT_OF_STEPS }] : [])],
         response.id,
         outOfSteps,
       );
+      chatStage("model-round", roundAt);
       stillOurs(ours);
       recordTokens("chat", response.model, response.usage, botId);
       sawWeb(response.output);
@@ -3123,7 +3244,20 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     if (opts.emailBack) for (const id of sessionIds) patchSession(id, { emailBack: opts.emailBack });
     // A thread this turn sent something the user kept between us to is kept between us too, and so is the reply naming it (Session.secret).
     if (sessionIds.length && isSecret(opts.answering)) for (const id of sessionIds) patchSession(id, { secret: true });
-    const tidy = tidyAnswer(response.output_text ?? "");
+    let spoken = forcedReply ?? response.output_text ?? "";
+    if (localOnly()) {
+      const imitated = stripImitatedDeeds(spoken);
+      spoken = imitated.text;
+      if (!sessionIds.length && !bg) {
+        const asked = lastWords(chatId);
+        const plan = imitated.claimedTask
+          ? { title: imitated.claimedTask, goal: asked }
+          : taskFromPromise(asked, spoken, false);
+        if (plan) sessionIds.push(startSession({ botId, goal: plan.goal, title: plan.title, chatId, sentVia: "you", where: "auto" }).id);
+      }
+      rememberAfterReply(scopeOf(botId), chatId, lastWords(chatId), { skip: remembered });
+    }
+    const tidy = tidyAnswer(spoken);
     const text = tidy.text.trim();
     if (bg) {
       const tag = { id: bg.routineId };
@@ -3179,13 +3313,14 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
         botId,
         text: reply,
         sessionIds: sessionIds.length ? sessionIds : undefined,
-        replyTo: opts.replyTo,
+        replyTo: answeringMessage ? answeringMessage.replyTo : opts.replyTo,
         // Out of steps mid-work: Go on, as a button, so carrying on is one tap (its words, sent as the person's).
         options: outOfSteps ? [...new Set([...(tidy.options ?? []), "Go on"])] : tidy.options,
         asked: asked.length ? asked : undefined,
         called: called.length ? called : undefined,
         drafts: drafts.length ? drafts : undefined,
         skillProposals: skillProposals.length ? skillProposals : undefined,
+        ...modelOn(response.id),
       });
     // Not the reply to something the user wants kept from someone: it would carry the secret into the shared memory.
     if (reply && !isSecret(opts.answering)) saveToMemory(scopeOf(botId), "chat", chatId, [{ who: botId, text: reply }], { chat: chatName(chatId) });
@@ -3204,7 +3339,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     // Still drawing a picture: it keeps typing until that's in (drawFor).
     if (!bg && ours() && !drawing.get(`${chatId} ${botId}`)) setTyping(chatId, botId, false);
     // What fell out of what it reads whole goes into the chat's summary, after the turn (chat-summary.ts).
-    if (ours()) void foldChat(chatId, botId);
+    if (ours() && !simpleLocal) void foldChat(chatId, botId);
   }
 }
 
@@ -3245,6 +3380,12 @@ function appsLine(b: Bot, lookingAt?: string) {
   return [`${owner}'s apps (change_app): ${list}.`, open ? `${owner} has "${open.title}" open beside this chat right now: what they ask to change, without naming another app, is for it.` : ""]
     .filter(Boolean)
     .join(" ");
+}
+
+function modelOn(id: string | undefined): { model?: Message["model"] } {
+  const route = answerRoute(id);
+  if (!route?.model) return {};
+  return { model: { id: route.model, endpoint: route.endpoint, ...(route.cloud ? { cloud: true } : {}) } };
 }
 
 /** Pictures being made, by chat and bot ("<chatId> <botId>"), so the bot shows as typing until they're in. */

@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSyn
 import { homedir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { DISPLAYS } from "@/lib/types";
+import { localOnly } from "@/lib/local/mode";
 import { executorKey } from "./cloud";
 import { codexPath, findCodex } from "./codex-cli";
 import { codexInSandbox, installDir, remotePort, SANDBOX_EXEC, sandboxArgs } from "./executor-sandbox";
@@ -327,6 +328,7 @@ export function prepareTaskDir(sessionId: string, dir = taskDir(sessionId), keep
  * writeSkillFiles), fresh each run, so Codex finds them as skills. A folder it can't write costs the task nothing.
  */
 export async function startExecutor(sessionId: string, envId: string, remoteUrl: string, port: number, dir = taskDir(sessionId), fullAccess = false, botId?: string, keep = false): Promise<ChildProcess> {
+  if (localOnly()) throw new Error("Tasks through the Codex CLI call OpenAI, which local-only mode refuses. Use a local computer worker instead.");
   if (!fullAccess && !existsSync(SANDBOX_EXEC)) throw new Error("this Mac has no sandbox for bots (/usr/bin/sandbox-exec)");
   const codex = findCodex();
   if (!codex) throw new Error("the Codex CLI isn't on this Mac yet");

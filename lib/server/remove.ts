@@ -326,6 +326,13 @@ export async function deleteBot(botId: string, withWorkspace = false) {
   }
   const chatId = botChatId(botId);
   const wsId = workspaceOf(b);
+  if ((await import("@/lib/local/mode")).localOnly()) {
+    const { deleteSession } = await import("@/lib/local/memory-store");
+    const { bindingOf } = await import("./memory");
+    const bank = bindingOf(wsId).bank;
+    deleteSession(bank, `bops-chat-bot-${botId}`);
+    deleteSession(`${bank}-bot-${botId}`, `bops-chat-bot-${botId}`);
+  }
   const hadRoutines = getState().routines.some((r) => r.botId === botId);
   // Its apps go to the main bot while it's still here (a workspace's delete takes them all instead).
   if (!withWorkspace) {

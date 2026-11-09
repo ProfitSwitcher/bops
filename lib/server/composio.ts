@@ -7,6 +7,7 @@ import { appLoginKey, CHANNEL_APPS, levelIn, live as running, MAIN_WORKSPACE, op
 import { forMember, logUse, targetNameOf, viaOf, type UseWhere } from "./access-sync";
 import { forgetLogin } from "./logins";
 import { trackServerEvent } from "./analytics";
+import { localOnly } from "@/lib/local/mode";
 import { appHeaders } from "./app-version";
 import { cloudOn, cloudProxy, cloudSession, cloudSessionNow, cloudUrl } from "./cloud";
 import { lowRisk, movesMoney } from "./judgment";
@@ -35,7 +36,7 @@ function userId() {
   return mine;
 }
 
-export const composioOn = () => (cloudOn() ? !!cloudSessionNow()?.composio : !!process.env.COMPOSIO_API_KEY);
+export const composioOn = () => !localOnly() && (cloudOn() ? !!cloudSessionNow()?.composio : !!process.env.COMPOSIO_API_KEY);
 
 /**
  * Bops' public address: the "connected" page after an app's sign-in, OAuth callbacks, and the bots'

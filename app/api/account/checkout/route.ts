@@ -1,3 +1,4 @@
+import { localOnly } from "@/lib/local/mode";
 import { loadOrgoKey } from "@/lib/server/orgo-auth";
 import { bopsBillingLink, usageRefusal } from "@/lib/server/plan";
 import { trackServerEvent } from "@/lib/server/analytics";
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
  * when Orgo can't take payment for Bops plans yet).
  */
 export async function POST(request: Request) {
+  if (localOnly()) return Response.json({ error: "Local mode has no plan or billing." }, { status: 404 });
   const unready = notReady();
   if (unready) return unready;
   const usage = usageRefusal();

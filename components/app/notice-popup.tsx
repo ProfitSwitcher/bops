@@ -2,6 +2,8 @@
 
 import { useState, useSyncExternalStore } from "react";
 import type { CloudNotice } from "@/cloud/protocol";
+import { isExternalAccountUrl } from "@/lib/local/settings-links";
+import { useLocalOnly } from "./local-mode";
 
 /** How often Bops asks for new notices while it's open; coming back to its window asks too, at most once a minute. */
 const EVERY_MS = 15 * 60_000;
@@ -71,12 +73,13 @@ async function putAway(id: string) {
 /** The notice, as a card in the sidebar. */
 export function NoticeCard() {
   const { n, late } = useNotice();
+  const local = useLocalOnly();
   const [closing, setClosing] = useState(false);
   // Decided as each notice first shows: one that turned up while Bops was open rises in.
   const [rises, setRises] = useState<{ id: string; late: boolean } | null>(null);
   if (n && rises?.id !== n.id) setRises({ id: n.id, late });
   if (!n) return null;
-  const link = n.link && /^https:\/\//.test(n.link.url) ? n.link : undefined;
+  const link = n.link && /^https:\/\//.test(n.link.url) && !(local && isExternalAccountUrl(n.link.url)) ? n.link : undefined;
   const ok = async () => {
     if (closing) return;
     setClosing(true);

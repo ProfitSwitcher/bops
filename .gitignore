@@ -35,6 +35,8 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 !.env.example
+# Machine routing and tokens. Copy bops.local.example.json.
+bops.local.json
 
 # vercel
 .vercel

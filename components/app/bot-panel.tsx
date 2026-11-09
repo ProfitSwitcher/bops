@@ -15,6 +15,7 @@ import { BotKeys } from "./keys";
 import { AgentChip, AgentMark } from "./agent-marks";
 import { BotAiSection } from "./bot-ai";
 import { ComputerSummary } from "./computer";
+import { useLocalOnly } from "./local-mode";
 import { Mascot } from "./mascot";
 import { PlanNote, usePlan } from "./plan-note";
 import { KeyIcon } from "./screen-cards";
@@ -237,6 +238,7 @@ function Details({
   const glass = GLASS;
   const running = state.sessions.filter((s) => s.botId === b.id && live(s)).length;
   const [copied, setCopied] = useState(false);
+  const local = useLocalOnly();
   const share = async () => {
     await navigator.clipboard.writeText([`${b.name} (${b.role}, Bops)`, b.phone, b.email].filter(Boolean).join("\n"));
     setCopied(true);
@@ -306,7 +308,7 @@ function Details({
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="text-[13px] font-semibold leading-4">Works on</span>
           <span className="text-[12px] leading-4 text-[#6B6B6B]">
-            {(b.runsOn ?? "auto") === "auto" ? `Its cloud computer, or ${yourMac(state)} when a task needs it` : b.runsOn === "mac" ? `${Your(state)} Mac, always` : "Its cloud computer, always"}
+            {local ? "The local worker on this Mac" : (b.runsOn ?? "auto") === "auto" ? `Its cloud computer, or ${yourMac(state)} when a task needs it` : b.runsOn === "mac" ? `${Your(state)} Mac, always` : "Its cloud computer, always"}
           </span>
         </div>
         <div className="flex shrink-0 gap-0.5 rounded-full bg-black/[0.05] p-[3px]">
@@ -413,6 +415,7 @@ export function contactOf(state: AppState, b: Bot, plan: PhonePlan) {
 
 /** Text or message it, call its number, book a video call, email it: the panel's four round buttons (`size` 44 on the page). */
 export function ContactActions({ state, bot: b, plan, onOpenChat, size }: { state: AppState; bot: Bot; plan: PhonePlan; onOpenChat: (chatId: string) => void; size?: number }) {
+  const local = useLocalOnly();
   const { reach, emailRoom, emailOnAsk } = contactOf(state, b, plan);
   return (
       <div className={`flex ${size ? "gap-2.5" : "gap-3"}`} data-contact-actions>
@@ -428,10 +431,12 @@ export function ContactActions({ state, bot: b, plan, onOpenChat, size }: { stat
           <path d="M3 2.2h2.6l1 2.6-1.6 1a7 7 0 003 3l1-1.6 2.6 1V11a.9.9 0 01-.9.9A9.6 9.6 0 012.1 3.1.9.9 0 013 2.2z" fill="#0A0A0A" />
         </ActionButton>
         {/* Video calls with bots aren't here yet; meanwhile it books a video call with the Bops team. */}
+        {!local && (
         <ActionButton size={size} label="Book a 20 minute video call with the Bops team" onClick={() => window.open(BOOK_A_CALL)}>
           <rect x="1.2" y="3.5" width="8" height="7" rx="1.5" fill="#0A0A0A" />
           <path d="M9.6 6.2l3.2-2v5.6L9.6 7.8z" fill="#0A0A0A" />
         </ActionButton>
+        )}
         <ActionButton size={size} label={b.email ? `Email ${b.email}` : emailRoom ? emailRoom.text : emailOnAsk ? `${b.name} has no email yet` : plan.planNeeded ? "An email comes with Pro and Max" : "Its inbox is coming"} disabled={!b.email} onClick={() => b.email && window.open(`mailto:${b.email}`)}>
           <rect x="1.5" y="3" width="11" height="8.5" rx="1.5" fill="none" stroke="#0A0A0A" strokeWidth="1.3" />
           <path d="M2 4l5 4 5-4" fill="none" stroke="#0A0A0A" strokeWidth="1.3" strokeLinejoin="round" />
@@ -506,6 +511,7 @@ export function ComputerChoice({ state, bot: b, className, onUpgrade }: { state:
   const [sure, setSure] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const local = useLocalOnly();
   const shared = sharesComputer(b);
   const main = workBot({ ...b, computer: "shared" }, state.bots);
   const plan = usePlan(state);
@@ -528,7 +534,9 @@ export function ComputerChoice({ state, bot: b, className, onUpgrade }: { state:
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="text-[13px] font-semibold leading-4">Computer</span>
           <span className="text-[12px] leading-4 text-[#6B6B6B]">
-            {b.isMain
+            {local
+              ? "The local worker on this Mac"
+              : b.isMain
               ? `Works on ${your(state)} free Bops computer, which ${main.name} has, with ${b.name}'s team`
               : shared
                 ? `Works on ${main.name}'s computer, on screens no one else is using`

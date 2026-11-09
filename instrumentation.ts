@@ -9,6 +9,8 @@ import type { Instrumentation } from "next";
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "nodejs") return;
+  const { bootLocal } = await import("./lib/local/boot");
+  bootLocal();
   // The build this server runs, as it was when it started (app/api/health): if the app's files are
   // replaced while it runs, the Mac app sees it's an old server and starts a new one.
   const { readFileSync } = await import("node:fs");

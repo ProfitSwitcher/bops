@@ -26,6 +26,9 @@ import { forgetScreens, listedScreenId, pageAt, sameComputer, screenEndpoint, sc
 import { saveFrame } from "./frames";
 import { namesSite, onASite } from "@/lib/task-sites";
 import { siteOf } from "@/lib/watch-sites";
+import { screenResetPlan } from "@/lib/local/computer-session";
+import { localComputerMissing } from "@/lib/local/orgo-adapter";
+import { localOnly } from "@/lib/local/mode";
 import { ensureTailnet } from "./tailnet";
 import { applyDesktop } from "./desktop";
 import { computerBriefing } from "./briefing";
@@ -1576,8 +1579,8 @@ export const setupWait = { upMs: 3 * 60_000, wakeAskMs: 60_000, pollMs: 3000 };
 export const setupWaitUntil = (startedAt: number, firstWakeAt: number): number =>
   Math.max(startedAt + setupWait.upMs, firstWakeAt ? firstWakeAt + wakeWaitMs() : 0);
 
-/** Orgo's answer for a computer that's gone: deleted (404), or out of this account's reach (403). */
-export const computerGone = (e: unknown) => e instanceof OrgoError && (e.status === 403 || e.status === 404);
+/** Orgo's answer for a computer that's gone: deleted (404), or out of this account's reach (403). A local id the worker no longer has is gone too, so the view can recover. */
+export const computerGone = (e: unknown) => (e instanceof OrgoError && (e.status === 403 || e.status === 404)) || localComputerMissing(e);
 
 /** Whether Orgo still has a computer (one deleted since, or out of this account's reach, is gone). */
 const stillThere = (computerId: string) => orgo.computer(computerId).then(
@@ -1822,12 +1825,15 @@ export async function resetComputer(botId: string) {
   for (const s of getState().sessions.filter((x) => onIt(x.botId) && live(x) && (x.botId === botId || x.runsOn !== "mac"))) stopSession(s.id, "Stopped: computer reset");
   if (getState().takeover && onIt(getState().takeover!.botId)) update((state) => (state.takeover = undefined));
   const computerId = b.computerId;
-  // Deleted on Orgo's site already, or out of this account's reach: nothing to delete, only to forget
-  // (and the plan read again, as Orgo no longer counts it).
-  await orgo.remove(computerId).catch((e: unknown) => {
-    if (!computerGone(e)) throw e;
-    forgetPlan();
-  });
+  // Local mode always forgets the computer. The worker session may already be gone after a restart.
+  if (localOnly()) await orgo.remove(computerId).catch(() => {});
+  else
+    // Deleted on Orgo's site already, or out of this account's reach: nothing to delete, only to forget
+    // (and the plan read again, as Orgo no longer counts it).
+    await orgo.remove(computerId).catch((e: unknown) => {
+      if (!computerGone(e)) throw e;
+      forgetPlan();
+    });
   forgetScreens(computerId);
   update(() => {
     // It had its own computer, so it keeps getting its own (see sharesComputer).
@@ -1872,6 +1878,7 @@ export async function resetScreens(botId: string, displays: number[] = DISPLAYS,
       reset.push(d);
     }
   }
+  if (reset.length && !screenResetPlan().shell) return { reset: reset.map((d) => DISPLAYS.indexOf(d) + 1), skipped };
   if (reset.length) {
     // A stopped task lets go of its screen when its turn ends.
     if (force) await new Promise((r) => setTimeout(r, 1500));
@@ -1910,15 +1917,20 @@ async function ensureScreen(computerId: string, display: number) {
       await orgo.bash(computerId, "true", 30);
       screens = await orgo.screens(computerId);
     }
-    while (!screens.some((x) => x.display === `:${display}`) && screens.length < MAX_SCREENS) {
+    let spins = 0;
+    while (!screens.some((x) => x.display === `:${display}`) && screens.length < MAX_SCREENS && spins < MAX_SCREENS) {
+      const before = screens.length;
       await orgo.createScreen(computerId);
       screens = await orgo.screens(computerId);
+      spins += 1;
+      if (screens.length <= before) break;
     }
     if (!screens.some((x) => x.display === `:${display}`)) throw new Error(`screen :${display} unavailable`);
   }
   // The screen's Chrome is there when its DevTools port answers (what the bots drive it by): a window
   // alone can be one Orgo opened itself (it does after a proxy change), which the bots can't drive.
-  await orgo.bash(computerId, `curl -s --max-time 2 -o /dev/null http://127.0.0.1:${9200 + display}/json/version || bops-chrome ${display}`, 30);
+  // Local mode uses the native worker, which has no DevTools port to wait on.
+  if (!(await import("@/lib/local/mode")).localOnly()) await orgo.bash(computerId, `curl -s --max-time 2 -o /dev/null http://127.0.0.1:${9200 + display}/json/version || bops-chrome ${display}`, 30);
 }
 
 /** Add a step to a thread's record (also used by the vault when it signs a thread's bot in). */
@@ -2688,7 +2700,7 @@ async function computerToolTurns(sessionId: string, at: { computerId: string; di
     logTaskRoute(sessionId);
   }
   // Its skills and apps on its computer (capabilities/skills), for the scripts they bring.
-  if (!at.resuming) await copySkillsToComputer(b.id, at.computerId, orgo.bash).catch((e: Error) => console.warn(`[skills] ${sessionId}: ${e.message}`));
+  if (!at.resuming && !localOnly()) await copySkillsToComputer(b.id, at.computerId, orgo.bash).catch((e: Error) => console.warn(`[skills] ${sessionId}: ${e.message}`));
   // What this turn runs on: the route (a tier up for each bump), or for a thread from before routes, the old rule.
   const now = session(sessionId)!;
   const config = taskConfig(now.route) ?? { model: now.effort === "high" ? HARD_MODEL : SESSION_MODEL, effort: now.effort ?? "medium" };
@@ -2766,6 +2778,7 @@ async function computerToolTurns(sessionId: string, at: { computerId: string; di
  * commands are the bot's; a bot with none is started exactly as before.
  */
 async function startOrgoExecutor(computerId: string, display: number, env: { id: string; remoteUrl: string }, b?: Bot) {
+  if (localOnly()) return;
   const key = Buffer.from(await executorKey()).toString("base64");
   const withBin = BRAINS_ON && !!b && aiOf(b, getState()).agents.some((x) => isCli(x.kind));
   if (withBin) await ensureBrainTools(computerId);
@@ -2896,6 +2909,7 @@ const browserReady = new Map<string, Promise<boolean>>();
  * page_script) next to the playwright-core it brings. True when they're there.
  */
 function ensureBrowserTool(computerId: string): Promise<boolean> {
+  if (localOnly()) return Promise.resolve(false);
   const known = browserReady.get(computerId);
   if (known) return known;
   const v = JSON.parse(readFileSync(join(process.cwd(), "node_modules/@playwright/mcp/package.json"), "utf8")).version as string;
@@ -2940,6 +2954,7 @@ const appsReach = new Map<string, boolean>();
  * next to the owner's (apps-<bot>.json; screen_mcp.py --bot picks it), so they reach its apps, not the owner's.
  */
 export async function ensureScreenTools(computerId: string, guest?: string) {
+  if ((await import("@/lib/local/mode")).localOnly()) return;
   const files: { dst: string; mode: string; body: Buffer }[] = SCREEN_TOOLS.map(([src, dst, mode]) => ({ dst, mode, body: readFileSync(join(/*turbopackIgnore: true*/ process.cwd(), src)) }));
   // How the bot's threads reach its apps and business data: Bops on the tailnet, and the bot's own secret.
   // `apps` and `data` say which tools screen_mcp.py offers (a file without them is from before business data: apps only).
@@ -3066,6 +3081,9 @@ async function run(sessionId: string) {
           const x = state.bots.find((y) => y.id === c.id);
           if (x) x.wakeFailed = undefined;
         });
+      // Local mode drives the Mac worker. The tailnet, the /opt/bops screen ledger, and
+      // `bops-screens claim` are cloud-computer setup and are not run here.
+      if (!localOnly()) {
       await ensureTailnet(c).catch(() => null);
       // The computer's screen ledger: drop stale claims, then take this thread's screen.
       await ensureScreenTools(computerId, b.id);
@@ -3093,6 +3111,7 @@ async function run(sessionId: string) {
         // Another agent got there first (Bops hadn't heard yet): wait for the next free screen, quietly.
         if (why.includes("is taken by")) throw new ScreenTaken();
         throw new Error(`my computer isn't ready (${why})`);
+      }
       }
     }
     // A screen of the bot's computer is watched for what only the user can get past (a Mac task's Chrome isn't one).
@@ -3155,6 +3174,14 @@ async function run(sessionId: string) {
       // A brain's call that needs the OK is held, never paused (composio.ts held): it has no resume of its own.
       turn = (input) => onBrainTurns.turn(input ?? "");
       compact = onBrainTurns.compact;
+    } else if (localOnly()) {
+      // The Mac worker does the clicks. The computer tool's shell is Linux (xdotool, /root, /opt/bops).
+      const { actionStep, localComputerTurn } = await import("@/lib/local/computer-session");
+      turn = (input) =>
+        localComputerTurn(sessionId, input ?? session(sessionId)?.goal ?? "", fetch, (action) => {
+          const recorded = actionStep(action);
+          step(sessionId, recorded.tool, recorded.detail);
+        });
     } else if (onComputerTool) {
       const onTool = await computerToolTurns(sessionId, { computerId, display, sharedWith: c.id !== b.id ? c.name : undefined, resuming, model: bopsModel });
       turn = onTool;
@@ -3462,7 +3489,7 @@ async function run(sessionId: string) {
       // Its brain's process ends with the run (a later turn starts it again, on the same session).
       await closeBrain?.().catch((e: Error) => console.warn(`[brains] ${sessionId}: ${e.message}`));
       if (folder) stopExecutor(sessionId, executor, folder, paused);
-      else if (!elsewhere) {
+      else if (!elsewhere && !localOnly()) {
         const envId = session(sessionId)?.env?.id;
         await orgo
           .bash(

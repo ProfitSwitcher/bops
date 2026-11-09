@@ -639,7 +639,7 @@ export function TeamChart({
 
           {/* The chart and everything under it: the chart keeps at least 300px and scrolls in its frame; the rest
               (notes, People) scrolls under it when there's more than fits. */}
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto" data-chart-scroll>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto" data-chart-scroll data-settings-scroll>
             <div className="relative mx-[26px] flex min-h-[300px] flex-1 flex-col overflow-auto rounded-[18px] bg-[#F6F6F4] [background-image:radial-gradient(#DDDDD8_1px,transparent_1px)] [background-size:18px_18px]" onClick={() => setPopover(null)}>
               <div className="relative mx-auto shrink-0" style={{ width, height }}>
                 <Wires t={t} boxes={boxes} rows={rows} picked={picked} many={many} ghost={others.length === 0} name={name} onLine={(a, b, x, y) => setPopover({ a, b, x, y })} />

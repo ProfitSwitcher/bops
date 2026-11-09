@@ -21,6 +21,12 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(request: Request) {
   if (!local(request)) return Response.json({ error: "local only" }, { status: 403 });
+  if ((await import("@/lib/local/mode")).localOnly()) {
+    return Response.json(
+      { error: "This screen stays on this Mac. The local worker takes screenshots; Orgo's desktop stream is not used.", local: true, screenshot: true },
+      { status: 409 },
+    );
+  }
   const url = new URL(request.url);
   const b = bot(url.searchParams.get("bot") ?? "");
   const display = Number(url.searchParams.get("display") ?? ORGO_STREAM_DISPLAY);

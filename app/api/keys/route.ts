@@ -1,3 +1,4 @@
+import { localOnly } from "@/lib/local/mode";
 import { KEY_PROVIDERS, KeysError, grantKey, keyGrants, keyHomes, keysOf, keysProject, listKeys, saveKey } from "@/lib/server/keys";
 import { notReady } from "@/lib/server/ready";
 import { sharedOpen } from "@/lib/server/shared";
@@ -29,6 +30,7 @@ export async function GET(request: Request) {
   const unready = notReady() ?? notFromWindow(request);
   if (unready) return unready;
   const providers = KEY_PROVIDERS.map(({ name, label, where, tip, readOnly }) => ({ name, label, where, tip, readOnly: !!readOnly }));
+  if (localOnly()) return Response.json({ signedIn: true, keys: [], providers, workspaceKeys: false, local: true, off: true });
   if (sharedOpen()) {
     try {
       const r = await sharedKeysList();
