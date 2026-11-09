@@ -25,8 +25,40 @@ export function endExoWarmup(endpoint: string, model: string) {
   if (warming?.endpoint === endpoint && warming.model === model) warming = null;
 }
 
+/** Consecutive placement failures before exo is skipped, then how long the skip lasts. */
+const FAIL_LIMIT = () => {
+  const n = Number(process.env.BOPS_EXO_FAIL_LIMIT);
+  return Number.isFinite(n) && n >= 1 ? n : 2;
+};
+const COOLDOWN_MS = () => {
+  const n = Number(process.env.BOPS_EXO_COOLDOWN_MS);
+  return Number.isFinite(n) && n >= 1 ? n : 30 * 60 * 1000;
+};
+
+type Breaker = { failures: number; until: number };
+const breakers = new Map<string, Breaker>();
+
 export function resetExoForTests() {
   warming = null;
+  breakers.clear();
+}
+
+function notePlacementSuccess(origin: string) {
+  breakers.delete(origin);
+}
+
+function notePlacementFailure(origin: string) {
+  const row = breakers.get(origin) ?? { failures: 0, until: 0 };
+  row.failures += 1;
+  if (row.failures >= FAIL_LIMIT()) row.until = Date.now() + COOLDOWN_MS();
+  breakers.set(origin, row);
+}
+
+function exoSkipReason(origin: string): string | undefined {
+  const row = breakers.get(origin);
+  if (!row || row.until <= Date.now()) return undefined;
+  const minutes = Math.max(1, Math.round((row.until - Date.now()) / 60_000));
+  return `exo is skipped for ${minutes} minute${minutes === 1 ? "" : "s"} after repeated placement failures`;
 }
 
 /** Default wait for an already-downloaded exo model to load into memory. */
@@ -183,24 +215,59 @@ export async function ensureExoInstance(opts: {
   allowEvict?: boolean;
   timeoutMs?: number;
 }): Promise<void> {
+  const skipped = exoSkipReason(opts.origin);
+  if (skipped) throw new Error(skipped);
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? exoLoadTimeoutMs();
   const headers = { ...opts.headers, Accept: "application/json" };
   const deadline = Date.now() + timeoutMs;
   const pause = () => sleep(timeoutMs < 5_000 ? 20 : 500);
+  const before = new Set<string>();
+  const owned = new Set<string>();
+  let placedOk = false;
+
+  const track = (body: unknown) => {
+    if (!placedOk) return;
+    for (const inst of exoInstances(body)) if (!before.has(inst.id)) owned.add(inst.id);
+  };
+
+  /** Drop instances this attempt created. An instance that was already running is left alone. */
+  const giveUp = async (message: string): Promise<never> => {
+    const notes: string[] = [];
+    if (placedOk) {
+      for (const id of owned) {
+        try {
+          const res = await fetchImpl(`${opts.origin}/instance/${encodeURIComponent(id)}`, { method: "DELETE", headers, signal: AbortSignal.timeout(30_000) });
+          if (!res.ok && res.status !== 404) notes.push(await errorText(res));
+        } catch (e) {
+          notes.push((e as Error).message);
+        }
+      }
+      notePlacementFailure(opts.origin);
+    }
+    const removed = placedOk && owned.size ? " Removed the instance this attempt created." : "";
+    throw new Error(`${message}${removed}${notes.length ? ` (${notes.join("; ")})` : ""}`);
+  };
 
   const waitReady = async () => {
     while (Date.now() < deadline) {
       const body = await stateOf(opts.origin, headers, fetchImpl, timeoutMs);
+      track(body);
+      const broken = exoInstances(body).find((inst) => owned.has(inst.id) && inst.failed);
+      if (broken?.failed) await giveUp(`${opts.model} failed on exo: ${broken.failed}`);
       const inst = exoInstanceFor(body, opts.model);
       if (inst?.failed) throw new Error(`${opts.model} failed on exo: ${inst.failed}`);
-      if (inst?.ready) return;
+      if (inst?.ready) {
+        notePlacementSuccess(opts.origin);
+        return;
+      }
       await pause();
     }
-    throw new Error(`${opts.model} did not become ready on exo`);
+    await giveUp(`${opts.model} did not become ready on exo`);
   };
 
   const current = await stateOf(opts.origin, headers, fetchImpl, timeoutMs);
+  for (const inst of exoInstances(current)) before.add(inst.id);
   if (exoInstanceFor(current, opts.model)) {
     await waitReady();
     return;
@@ -234,7 +301,10 @@ export async function ensureExoInstance(opts: {
       choice = { sharding: "Pipeline", instance_meta: "MlxRing", min_nodes: 1, nodes: nodes.complete.slice(0, 1) };
     }
     const detail = await place(choice);
-    if (!detail) return "placed" as const;
+    if (!detail) {
+      placedOk = true;
+      return "placed" as const;
+    }
     const now = await stateOf(opts.origin, headers, fetchImpl, timeoutMs).catch(() => null);
     if (now && exoInstanceFor(now, opts.model)) return "exists" as const;
     return wontFit(detail) ? { memory: detail, other: "" } : { memory: "", other: detail };

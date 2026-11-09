@@ -392,6 +392,149 @@ await check("eviction stays off unless the config allows it", async () => {
   exo.server.close();
 });
 
+function failedInstance(id, model) {
+  return { MlxRingInstance: { instanceId: id, shardAssignments: { modelId: model, runnerToShard: { [id]: {} }, nodeToRunner: { studio1: id } } } };
+}
+
+await check("a runner failure deletes only the instance this attempt created", async () => {
+  resetExoForTests();
+  clearHealth();
+  process.env.BOPS_EXO_LOAD_TIMEOUT_MS = "10000";
+  const deleted = [];
+  let placed = false;
+  const exo = await listen(async (req, res) => {
+    const path = req.url.split("?")[0];
+    if (path === "/state") {
+      const instances = { "keep-me": failedInstance("keep-me", "other-model") };
+      const runners = { "keep-me": { RunnerReady: {} } };
+      if (placed) {
+        instances["inst-new"] = failedInstance("inst-new", KIMI);
+        runners["inst-new"] = { RunnerFailed: { errorMessage: "Model type deepseek_v4 not supported" } };
+      }
+      return json(res, { downloads: { studio1: [done(KIMI, "studio1")] }, instances, runners });
+    }
+    if (path === "/instance/previews") return json(res, { previews: [preview(KIMI, "Pipeline", "MlxRing", ["studio1"])] });
+    if (req.method === "POST" && path === "/place_instance") {
+      placed = true;
+      return json(res, { message: "Command received." });
+    }
+    if (req.method === "DELETE") {
+      deleted.push(path);
+      return json(res, { ok: true });
+    }
+    json(res, { error: "unexpected" }, 500);
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "exo", baseUrl: `${exo.url}/v1`, provider: "exo", apiKey: "" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [{ endpoint: "exo", model: KIMI }] } },
+    },
+    workers: [],
+  });
+  const started = Date.now();
+  await assert.rejects(chat({ role: "heavy", messages: [{ role: "user", content: "write" }] }), /Model type deepseek_v4 not supported/);
+  assert.ok(Date.now() - started < 2000);
+  assert.deepEqual(deleted, ["/instance/inst-new"]);
+  exo.server.close();
+});
+
+await check("an instance that was already running is not deleted when its runner has failed", async () => {
+  resetExoForTests();
+  clearHealth();
+  const calls = [];
+  const exo = await listen(async (req, res) => {
+    const path = req.url.split("?")[0];
+    calls.push(`${req.method} ${path}`);
+    if (path === "/state") {
+      return json(res, {
+        downloads: { studio1: [done(KIMI, "studio1")] },
+        instances: { "inst-old": failedInstance("inst-old", KIMI) },
+        runners: { "inst-old": { RunnerFailed: { errorMessage: "Model type deepseek_v4 not supported" } } },
+      });
+    }
+    json(res, { error: "unexpected" }, 500);
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "exo", baseUrl: `${exo.url}/v1`, provider: "exo", apiKey: "" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [{ endpoint: "exo", model: KIMI }] } },
+    },
+    workers: [],
+  });
+  await assert.rejects(chat({ role: "heavy", messages: [{ role: "user", content: "write" }] }), /deepseek_v4/);
+  assert.equal(calls.some((c) => c.startsWith("DELETE") || c.startsWith("POST /place_instance")), false);
+  exo.server.close();
+});
+
+await check("a placement that never becomes ready is deleted, and exo is then skipped", async () => {
+  resetExoForTests();
+  clearHealth();
+  process.env.BOPS_EXO_LOAD_TIMEOUT_MS = "1000";
+  const placed = [];
+  const deleted = [];
+  let seq = 0;
+  const live = new Set();
+  const exo = await listen(async (req, res) => {
+    const path = req.url.split("?")[0];
+    if (path === "/state") {
+      const instances = {};
+      const runners = {};
+      for (const id of live) {
+        instances[id] = failedInstance(id, KIMI);
+        runners[id] = { RunnerIdle: {} };
+      }
+      return json(res, { downloads: { studio1: [done(KIMI, "studio1")] }, instances, runners });
+    }
+    if (path === "/instance/previews") return json(res, { previews: [preview(KIMI, "Pipeline", "MlxRing", ["studio1"])] });
+    if (req.method === "POST" && path === "/place_instance") {
+      seq += 1;
+      const id = `inst-${seq}`;
+      live.add(id);
+      placed.push(id);
+      return json(res, { message: "Command received." });
+    }
+    if (req.method === "DELETE") {
+      const id = decodeURIComponent(path.split("/").pop());
+      live.delete(id);
+      deleted.push(id);
+      return json(res, { ok: true });
+    }
+    json(res, { error: "unexpected" }, 500);
+  });
+  const ollama = await listen((req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "ornith-1.5:122b" }] });
+    json(res, { choices: [{ message: { content: "planner fallback" } }] });
+  });
+  const heavy = {
+    llm: {
+      endpoints: [
+        { id: "exo", baseUrl: `${exo.url}/v1`, provider: "exo", apiKey: "" },
+        { id: "studio3", baseUrl: `${ollama.url}/v1`, provider: "ollama", apiKey: "" },
+      ],
+      roles: {
+        planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] },
+        heavy: { chain: [{ endpoint: "exo", model: KIMI }, { endpoint: "studio3", model: "ornith-1.5:122b" }] },
+      },
+    },
+    workers: [],
+  };
+  useConfig(heavy);
+  const first = await chat({ role: "heavy", messages: [{ role: "user", content: "one" }] });
+  clearHealth();
+  const second = await chat({ role: "heavy", messages: [{ role: "user", content: "two" }] });
+  clearHealth();
+  const third = await chat({ role: "heavy", messages: [{ role: "user", content: "three" }] });
+  assert.equal(first.content, "planner fallback");
+  assert.equal(second.content, "planner fallback");
+  assert.equal(third.content, "planner fallback");
+  assert.match(first.degraded ?? "", /did not become ready/);
+  assert.match(third.degraded ?? "", /skipped/);
+  assert.deepEqual(placed, ["inst-1", "inst-2"]);
+  assert.deepEqual(deleted, ["inst-1", "inst-2"]);
+  exo.server.close();
+  ollama.server.close();
+});
+
 await check("a high-effort turn is heavy, and computer use stays on vision", async () => {
   assert.equal(roleFor({ reasoning: { effort: "high" }, input: "design the migration" }), "heavy");
   assert.equal(roleFor({ reasoning: { effort: "high" }, tools: [{ type: "computer" }], input: "click save" }), "vision");
