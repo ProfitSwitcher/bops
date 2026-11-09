@@ -401,7 +401,7 @@ export function CallBar({
         </button>
         <div className={`flex shrink-0 flex-col pl-1 ${phase === "failed" ? "w-[min(320px,52vw)]" : "w-[74px]"}`}>
           <span className="truncate text-[14px] font-semibold leading-[18px]">{b.name}</span>
-          <span className={`${phase === "failed" ? "line-clamp-4 font-sans" : "truncate font-mono"} text-[12px] leading-[15px] ${phase === "failed" ? "text-[#B42318]" : "text-[#6B6B6B]"}`}>{status}</span>
+          <span role={phase === "failed" ? "alert" : undefined} className={`${phase === "failed" ? "line-clamp-4 font-sans" : "truncate font-mono"} text-[12px] leading-[15px] ${phase === "failed" ? "text-[#B42318]" : "text-[#6B6B6B]"}`}>{status}</span>
         </div>
 
         <div className={`h-10 w-[104px] items-center justify-between px-1.5 ${compact ? "hidden" : "flex"}`} aria-hidden>

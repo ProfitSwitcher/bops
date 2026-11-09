@@ -44,6 +44,11 @@ export function useConfig(config: LocalConfig | null) {
   override = config;
 }
 
+/** A local call may start with no WebRTC offer. Cloud calls still need the browser's SDP. */
+export function callStartAllowed(sdp: string | undefined, local = localOnly()): boolean {
+  return local || !!sdp;
+}
+
 export function localOnly(): boolean {
   const v = (process.env.BOPS_LOCAL_ONLY ?? "").trim().toLowerCase();
   if (v === "0" || v === "false" || v === "off") return false;

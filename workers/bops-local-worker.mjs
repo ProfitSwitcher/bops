@@ -54,9 +54,10 @@ export function startWorker(opts = {}) {
       if (!authorized(req, token, loopbackOnly)) return send(res, 401, { error: "Unauthorized" });
       if (req.method === "POST" && url.pathname === "/v1/sessions") {
         const body = await readJson(req);
-        const id = randomUUID();
-        sessions.set(id, { name: body.name || "Bops", actions: [] });
-        return send(res, 200, { id, name: body.name || "Bops", status: "running" });
+        const id = sessionIdOf(body);
+        if (!sessions.has(id)) sessions.set(id, { name: body.name || "Bops", actions: [] });
+        const current = sessions.get(id);
+        return send(res, 200, { id, name: current.name, status: "running" });
       }
       const session = url.pathname.match(/^\/v1\/sessions\/([^/]+)(.*)$/);
       if (!session) return send(res, 404, { error: "Not found" });
@@ -100,6 +101,14 @@ export function startWorker(opts = {}) {
   return new Promise((resolve) => {
     server.listen(port, bind, () => resolve({ server, port: server.address().port, bind, sessions }));
   });
+}
+
+/** A caller may ask for a session id it already saved. A new one is made when the body has none. */
+function sessionIdOf(body) {
+  const id = typeof body?.id === "string" ? body.id : "";
+  if (!id) return randomUUID();
+  if (!/^[A-Za-z0-9-]{8,80}$/.test(id)) throw new Error("bad session id");
+  return id;
 }
 
 function send(res, status, body) {

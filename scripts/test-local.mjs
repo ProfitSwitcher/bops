@@ -29,10 +29,10 @@ process.env.BOPS_LOCAL_ONLY = "1";
 for (const key of ["BOPS_LLM_PLANNER_MODEL", "BOPS_LLM_FAST_MODEL", "BOPS_LLM_VISION_MODEL", "BOPS_LLM_EMBED_MODEL", "BOPS_LOCAL_CONFIG"]) delete process.env[key];
 
 const { isCloudModel, modelsFromTagsPayload, assertLocalModel, CloudModelError, localModels } = await import("../lib/local/models.ts");
-const { parseConfig, useConfig, loadConfig, localOnly } = await import("../lib/local/mode.ts");
+const { parseConfig, useConfig, loadConfig, localOnly, callStartAllowed } = await import("../lib/local/mode.ts");
 const { clearHealth, withRole, checkEndpoint } = await import("../lib/local/endpoints.ts");
 const { chat, embed, looseToolCalls } = await import("../lib/local/provider.ts");
-const { localScreens, screensAdvanced } = await import("../lib/local/orgo-adapter.ts");
+const { localScreens, screensAdvanced, localOrgoCall, localOrgoAnswered, resetLocalComputersForTests, localComputerMissing } = await import("../lib/local/orgo-adapter.ts");
 const { localComputerTurn } = await import("../lib/local/computer-session.ts");
 const { isSimpleLocalChat } = await import("../lib/local/fast-chat.ts");
 const { transcribeLocal } = await import("../lib/local/speech.ts");
@@ -542,6 +542,87 @@ await check("bash on the worker returns exit_code instead of failing the request
   assert.equal(body.exit_code, 1);
   assert.match(body.output, /hello/);
   worker.server.close();
+});
+
+async function restartWorker(worker) {
+  const port = worker.port;
+  await new Promise((resolve) => worker.server.close(resolve));
+  return startWorker({ bind: "127.0.0.1", port, kind: "fake", token: "" });
+}
+
+await check("a saved local computer still screenshots and runs bash after a restart", async () => {
+  resetLocalComputersForTests();
+  const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "" });
+  useConfig({
+    llm: { endpoints: [], roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [] }, embed: { chain: [] }, heavy: { chain: [] } } },
+    workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
+  });
+  const made = await localOrgoCall("POST", "/computers", { name: "Boppy" });
+  assert.match(made.id, /^local_studio3_[A-Za-z0-9-]{8,}$/);
+  resetLocalComputersForTests();
+  const again = await restartWorker(worker);
+  const shot = await localOrgoAnswered(`http://local.invalid/computers/${encodeURIComponent(made.id)}/screenshot`, {}, 5000, undefined, async (res) => Buffer.from(await res.arrayBuffer()));
+  assert.equal(shot.res.status, 200);
+  assert.ok(shot.text.length > 8);
+  const bash = await localOrgoCall("POST", `/computers/${encodeURIComponent(made.id)}/bash`, { command: "echo hi" });
+  assert.equal(bash.exit_code, 0);
+  assert.match(bash.output, /ok/);
+  await assert.rejects(localOrgoCall("GET", "/computers/local_missing_0123456789abcdef"), (e) => localComputerMissing(e));
+  again.server.close();
+  resetLocalComputersForTests();
+});
+
+await check("a computer task finishes on the saved computer after a restart", async () => {
+  clearHealth();
+  resetLocalComputersForTests();
+  let asked = 0;
+  const worker = await startWorker({ bind: "127.0.0.1", port: 0, kind: "fake", token: "" });
+  const vision = await listen(async (req, res) => {
+    if (req.url === "/api/tags") return json(res, { models: [{ name: "qwen3.8:27b-q8_0" }] });
+    asked += 1;
+    if (asked === 1) {
+      return json(res, { choices: [{ message: { content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "computer", arguments: JSON.stringify({ actions: [{ type: "click", x: 20, y: 30 }] }) } }] } }] });
+    }
+    json(res, { choices: [{ message: { content: "Done.", tool_calls: [{ id: "c2", type: "function", function: { name: "computer", arguments: JSON.stringify({ done: true, actions: [] }) } }] } }] });
+  });
+  useConfig({
+    llm: {
+      endpoints: [{ id: "v", baseUrl: `${vision.url}/v1`, provider: "ollama" }],
+      roles: { planner: { chain: [] }, fast: { chain: [] }, vision: { chain: [{ endpoint: "v", model: "qwen3.8:27b-q8_0" }] }, embed: { chain: [] }, heavy: { chain: [] } },
+    },
+    workers: [{ id: "studio3", url: `http://127.0.0.1:${worker.port}`, token: "" }],
+  });
+  const made = await localOrgoCall("POST", "/computers", { name: "Boppy" });
+  resetLocalComputersForTests();
+  const again = await restartWorker(worker);
+  const result = await runComputerUseLoop({
+    goal: "click the button",
+    screenshot: async () => {
+      const shot = await localOrgoAnswered(`http://local.invalid/computers/${encodeURIComponent(made.id)}/screenshot`, {}, 5000, undefined, async (res) => Buffer.from(await res.arrayBuffer()));
+      if (!shot.res.ok) return null;
+      return { mime: "image/png", base64: shot.text.toString("base64") };
+    },
+    act: async (actions) => {
+      for (const action of actions) {
+        if (action.type === "click") await localOrgoCall("POST", `/computers/${encodeURIComponent(made.id)}/click`, { x: action.x, y: action.y });
+      }
+      return actions.map((a) => a.type).join(", ");
+    },
+  });
+  assert.match(result.text, /Done/);
+  const remote = made.id.slice("local_studio3_".length);
+  const session = again.sessions.get(remote);
+  assert.ok(session?.actions.some((a) => a.op === "click" && a.body?.x === 20));
+  vision.server.close();
+  again.server.close();
+  resetLocalComputersForTests();
+});
+
+await check("a local call may start without an SDP offer", async () => {
+  assert.equal(callStartAllowed("", true), true);
+  assert.equal(callStartAllowed(undefined, true), true);
+  assert.equal(callStartAllowed("", false), false);
+  assert.equal(callStartAllowed("v=0", false), true);
 });
 
 await check("a short local chat skips the router and memory models", async () => {

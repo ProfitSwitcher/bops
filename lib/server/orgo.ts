@@ -915,6 +915,10 @@ export const orgo = {
    * computers made there before sign-in are Bops' too, when the account that signed in can reach them).
    */
   remove: async (computerId: string) => {
+    if (localComputersOn()) {
+      await call("DELETE", `/computers/${encodeURIComponent(computerId)}`);
+      return;
+    }
     const epoch = stateEpoch();
     const c = await call<{ project_id?: string; workspace_id?: string }>("GET", `/computers/${computerId}`);
     const where = c.workspace_id ?? c.project_id;

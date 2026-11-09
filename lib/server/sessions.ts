@@ -26,6 +26,7 @@ import { forgetScreens, listedScreenId, pageAt, sameComputer, screenEndpoint, sc
 import { saveFrame } from "./frames";
 import { namesSite, onASite } from "@/lib/task-sites";
 import { siteOf } from "@/lib/watch-sites";
+import { localComputerMissing } from "@/lib/local/orgo-adapter";
 import { localOnly } from "@/lib/local/mode";
 import { ensureTailnet } from "./tailnet";
 import { applyDesktop } from "./desktop";
@@ -1577,8 +1578,8 @@ export const setupWait = { upMs: 3 * 60_000, wakeAskMs: 60_000, pollMs: 3000 };
 export const setupWaitUntil = (startedAt: number, firstWakeAt: number): number =>
   Math.max(startedAt + setupWait.upMs, firstWakeAt ? firstWakeAt + wakeWaitMs() : 0);
 
-/** Orgo's answer for a computer that's gone: deleted (404), or out of this account's reach (403). */
-export const computerGone = (e: unknown) => e instanceof OrgoError && (e.status === 403 || e.status === 404);
+/** Orgo's answer for a computer that's gone: deleted (404), or out of this account's reach (403). A local id the worker no longer has is gone too, so the view can recover. */
+export const computerGone = (e: unknown) => (e instanceof OrgoError && (e.status === 403 || e.status === 404)) || localComputerMissing(e);
 
 /** Whether Orgo still has a computer (one deleted since, or out of this account's reach, is gone). */
 const stillThere = (computerId: string) => orgo.computer(computerId).then(
@@ -1823,12 +1824,15 @@ export async function resetComputer(botId: string) {
   for (const s of getState().sessions.filter((x) => onIt(x.botId) && live(x) && (x.botId === botId || x.runsOn !== "mac"))) stopSession(s.id, "Stopped: computer reset");
   if (getState().takeover && onIt(getState().takeover!.botId)) update((state) => (state.takeover = undefined));
   const computerId = b.computerId;
-  // Deleted on Orgo's site already, or out of this account's reach: nothing to delete, only to forget
-  // (and the plan read again, as Orgo no longer counts it).
-  await orgo.remove(computerId).catch((e: unknown) => {
-    if (!computerGone(e)) throw e;
-    forgetPlan();
-  });
+  // Local mode always forgets the computer. The worker session may already be gone after a restart.
+  if (localOnly()) await orgo.remove(computerId).catch(() => {});
+  else
+    // Deleted on Orgo's site already, or out of this account's reach: nothing to delete, only to forget
+    // (and the plan read again, as Orgo no longer counts it).
+    await orgo.remove(computerId).catch((e: unknown) => {
+      if (!computerGone(e)) throw e;
+      forgetPlan();
+    });
   forgetScreens(computerId);
   update(() => {
     // It had its own computer, so it keeps getting its own (see sharesComputer).

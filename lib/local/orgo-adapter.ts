@@ -76,11 +76,61 @@ async function firstWorker(): Promise<Worker> {
   throw new Error(`No local computer worker is up (${skipped.join(", ") || "none configured"}). Start one with node workers/bops-local-worker.mjs. Orgo cloud computers are not used.`);
 }
 
-function workerFor(computerId: string): { worker: Worker; remote: string } {
+/** The error healIfGone treats as a computer that is gone, so the UI can recover. */
+export function localComputerMissing(e: unknown): boolean {
+  return e instanceof Error && e.message.startsWith("No local worker has computer ");
+}
+
+function missing(computerId: string): Error {
+  return new Error(`No local worker has computer ${computerId}.`);
+}
+
+/** `local_<workerId>_<sessionId>`. The longest configured worker id wins, so an id may contain underscores. */
+function parseLocalComputer(computerId: string): { worker: Worker; remote: string } | null {
+  const list = [...workers()].sort((a, b) => b.id.length - a.id.length);
+  for (const worker of list) {
+    const prefix = `local_${worker.id}_`;
+    if (!computerId.startsWith(prefix)) continue;
+    const remote = computerId.slice(prefix.length);
+    if (remote && /^[A-Za-z0-9-]{8,80}$/.test(remote)) return { worker, remote };
+  }
+  return null;
+}
+
+/**
+ * The computer id outlives this process. When it isn't in the map, open that same session on the worker again.
+ * A worker that restarted accepts the id and creates it.
+ */
+async function ensureComputer(computerId: string): Promise<{ worker: Worker; remote: string }> {
   const known = sessions.get(computerId);
-  const worker = workers().find((w) => w.id === known?.worker) ?? workers().find((w) => computerId.startsWith(`local_${w.id}_`));
-  if (!worker || !known) throw new Error(`No local worker has computer ${computerId}.`);
-  return { worker, remote: known.remote };
+  const parsed = parseLocalComputer(computerId);
+  const worker = (known && workers().find((w) => w.id === known.worker)) || parsed?.worker;
+  const remote = known?.remote || parsed?.remote;
+  if (!worker || !remote) throw missing(computerId);
+  // A worker that just started can reset the first connection. Try again before giving up.
+  let last: unknown;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(`${worker.url}/v1/sessions`, {
+        method: "POST",
+        headers: headers(worker),
+        body: JSON.stringify({ id: remote, name: known?.name || "Local computer" }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (res.ok) {
+        sessions.set(computerId, { worker: worker.id, remote, name: known?.name || "Local computer" });
+        return { worker, remote };
+      }
+      last = new Error(await res.text());
+    } catch (e) {
+      last = e;
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  if (localComputerMissing(last)) throw last;
+  const cause = last instanceof Error && "cause" in last ? ` (${(last.cause as Error)?.message || last.cause})` : "";
+  const why = last instanceof Error ? last.message : String(last ?? "no answer");
+  throw new Error(`No local worker has computer ${computerId}. ${why}${cause}`);
 }
 
 export async function localOrgoCall<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -125,7 +175,7 @@ async function createComputer(body: unknown) {
 }
 
 async function computerInfo(id: string) {
-  const { remote } = workerFor(id);
+  const { remote } = await ensureComputer(id);
   const known = sessions.get(id);
   return {
     id,
@@ -142,14 +192,17 @@ async function computerInfo(id: string) {
 }
 
 async function removeComputer(id: string) {
-  const { worker, remote } = workerFor(id);
-  await fetch(`${worker.url}/v1/sessions/${remote}`, { method: "DELETE", headers: headers(worker) }).catch(() => {});
+  const known = sessions.get(id);
+  const parsed = parseLocalComputer(id);
+  const worker = (known && workers().find((w) => w.id === known.worker)) || parsed?.worker;
+  const remote = known?.remote || parsed?.remote;
   sessions.delete(id);
+  if (worker && remote) await fetch(`${worker.url}/v1/sessions/${encodeURIComponent(remote)}`, { method: "DELETE", headers: headers(worker) }).catch(() => {});
   return { ok: true };
 }
 
 async function forward(id: string, path: string, body: unknown) {
-  const { worker, remote } = workerFor(id);
+  const { worker, remote } = await ensureComputer(id);
   const res = await fetch(`${worker.url}/v1/sessions/${remote}${path}`, { method: "POST", headers: headers(worker), body: JSON.stringify(body ?? {}), signal: AbortSignal.timeout(60_000) });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
@@ -163,7 +216,7 @@ export async function localOrgoAnswered(url: string, _init: RequestInit, _timeou
     return { res, text: await read(res), key: "local" };
   }
   const id = decodeURIComponent(shot[1]);
-  const { worker, remote } = workerFor(id);
+  const { worker, remote } = await ensureComputer(id);
   const res = await fetch(`${worker.url}/v1/sessions/${remote}/screenshot${u.search}`, { headers: headers(worker), signal });
   return { res, text: await read(res), key: "local" };
 }
