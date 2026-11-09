@@ -2,6 +2,8 @@ import "server-only";
 import { LIGHT } from "./routing";
 import { setting } from "./models";
 import { Honcho, Session as HonchoSessionRef, type Peer, type Session as HonchoSession } from "@honcho-ai/sdk";
+import { localOnly } from "@/lib/local/mode";
+import { localBank } from "@/lib/local/honcho-local";
 import { openaiClient } from "./openai-client";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -30,7 +32,7 @@ import { recordTokens, usageTags } from "./usage";
  * there carries the user's own prefix (bankFor).
  */
 
-const on = () => (cloudOn() ? !!cloudSessionNow()?.honcho : !!process.env.HONCHO_API_KEY);
+const on = () => (localOnly() ? process.env.BOPS_LOCAL_MEMORY !== "0" : cloudOn() ? !!cloudSessionNow()?.honcho : !!process.env.HONCHO_API_KEY);
 /** Facts out of a message: a small job of a fixed shape, for Luna (routing.ts LIGHT). */
 const MODEL = () => setting(LIGHT(), "BOPS_MEMORY_MODEL");
 
@@ -146,7 +148,14 @@ const live: Live = (g.bopsMemory2 ??= { banks: new Map(), privacy: new Map(), ki
  * only ones the cloud lets them reach. The SDK resolves its paths ("/v3/…") against the host alone,
  * so the cloud's /proxy/honcho is put in front of each.
  */
+const localBanks = new Map<string, ReturnType<typeof localBank>>();
+
 function bankFor(b: Binding) {
+  if (localOnly()) {
+    let found = localBanks.get(b.bank);
+    if (!found) localBanks.set(b.bank, (found = localBank(b.bank)));
+    return found as unknown as Bank;
+  }
   const via = cloudProxy("honcho");
   const prefix = via ? cloudSessionNow()?.honcho?.workspacePrefix : undefined;
   if (via && !prefix) throw new Error("Memory isn't available right now.");
@@ -1031,7 +1040,11 @@ const rowOf = (c: { id: string; content: string; createdAt: string; sessionId: s
 });
 
 /** A session by its id, without asking memory for it (or making it). */
-export const sessionRef = (client: Honcho, id: string) => new HonchoSessionRef(id, client.workspaceId, client.http);
+export const sessionRef = (client: Honcho, id: string) => {
+  const local = client as unknown as { localSession?: (id: string) => { delete: () => Promise<void> } };
+  if (local.localSession) return local.localSession(id);
+  return new HonchoSessionRef(id, client.workspaceId, client.http);
+};
 
 const notFound = (e: unknown) => (e as { status?: number }).status === 404;
 

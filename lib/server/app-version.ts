@@ -1,4 +1,5 @@
 import { APP_VERSION_HEADER, BOPS_STATE_LEVEL_HEADER, STATE_LEVEL, TELEMETRY_HEADER } from "@/cloud/protocol";
+import { localOnly } from "@/lib/local/mode";
 
 /**
  * This app's version: package.json's, set in the build (next.config.ts). Undefined when it isn't
@@ -13,7 +14,7 @@ export const appVersion = (): string | undefined => process.env.BOPS_APP_VERSION
  */
 export function telemetryHere(): boolean {
   const env = process.env;
-  if (env.BOPS_SELF_HOSTED === "1" || env.BOPS_DATABASE_URL || env.BOPS_TELEMETRY === "0" || env.DO_NOT_TRACK === "1") return false;
+  if (localOnly() || env.BOPS_SELF_HOSTED === "1" || env.BOPS_DATABASE_URL || env.BOPS_TELEMETRY === "0" || env.DO_NOT_TRACK === "1") return false;
   return env.NODE_ENV === "production" || env.BOPS_TELEMETRY === "1";
 }
 

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { PostHog } from "posthog-node";
 import { cleanNodeEvent, POSTHOG_HOST, POSTHOG_PROJECT, quietFetch, type BopsEventProps, type BopsPersonProps, type EventsBy } from "@/cloud/analytics-rules";
 import type { AnalyticsInfo } from "@/lib/analytics";
+import { localOnly } from "@/lib/local/mode";
 import { appVersion, telemetryHere } from "./app-version";
 import { cloudOn, cloudSessionNow } from "./cloud";
 import { cloudUrl } from "./cloud-url";
@@ -21,7 +22,7 @@ type Client = Pick<PostHog, "capture" | "captureException" | "flush" | "shutdown
 const g = globalThis as unknown as { bopsPosthog?: Client };
 
 /** Whether the Mac sends usage events now. */
-export const analyticsOn = () => telemetryHere() && cloudOn() && !!getState().account && !getState().analyticsOff;
+export const analyticsOn = () => !localOnly() && telemetryHere() && cloudOn() && !!getState().account && !getState().analyticsOff;
 
 /** Which Bops this is, with orgo-web's values for its `environment` property. */
 export function telemetryEnvironment(): "production" | "staging" | "development" {
@@ -32,6 +33,7 @@ export function telemetryEnvironment(): "production" | "staging" | "development"
 }
 
 function client(): Client {
+  if (localOnly()) return { capture() {}, captureException() {}, flush: async () => {}, shutdown: async () => {} } as Client;
   if (!g.bopsPosthog) {
     g.bopsPosthog = new PostHog(POSTHOG_PROJECT, { host: POSTHOG_HOST, flushAt: 1, flushInterval: 0, fetch: quietFetch, before_send: (m) => cleanNodeEvent(m, "mac_server") });
     // What's queued goes out before the app quits (persist.ts gives exit work up to 5 seconds).

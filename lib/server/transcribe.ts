@@ -1,5 +1,6 @@
 import "server-only";
 import { toFile } from "openai";
+import { localOnly } from "@/lib/local/mode";
 import { openaiClient } from "./openai-client";
 import { getState } from "./store";
 import { usageTags } from "./usage";
@@ -19,6 +20,7 @@ const MODEL = "gpt-transcribe";
 export const MAX_RECORDING = 9 * 1024 * 1024;
 
 export async function transcribe(audio: Blob, botId?: string): Promise<string> {
+  if (localOnly() && !process.env.BOPS_LLM_TRANSCRIBE_MODEL?.trim()) throw new Error("Voice transcription is unavailable offline. Set BOPS_LLM_TRANSCRIBE_MODEL to a local speech model.");
   const names = [getState().owner?.name.trim(), ...getState().bots.map((b) => b.name)].filter(Boolean);
   const ext = /mp4|m4a|aac/.test(audio.type) ? "m4a" : /ogg/.test(audio.type) ? "ogg" : /wav/.test(audio.type) ? "wav" : "webm";
   const file = await toFile(audio, `recording.${ext}`, { type: audio.type || "audio/webm" });

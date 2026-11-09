@@ -5,6 +5,7 @@ import { botChatId, MAIN_WORKSPACE, settingsOf, workspaceOf, type Bot, type Emai
 import { BOPS_TIERS, type MailHandleCheck, type MailHandleResult } from "@/cloud/protocol";
 import { emailShort } from "@/lib/plan-includes";
 import { emailsHeld, isPlanBot, planRoom } from "./plan-room";
+import { localOnly } from "@/lib/local/mode";
 import { appHeaders } from "./app-version";
 import { cloudJson, cloudOn, cloudProxy, cloudSessionNow } from "./cloud";
 import { allows, NeedsOk, type AskSpec } from "./permission";
@@ -45,6 +46,7 @@ import { recordUsage } from "./usage";
 
 /** The AgentMail key in use, and the pod when it's given: the user's own from Bops Cloud, or AGENTMAIL_API_KEY and AGENTMAIL_POD_ID. `via`: through Bops Cloud (a runner's). */
 function mailAccess(): { key: string; podId?: string; via?: string } | null {
+  if (localOnly()) return null;
   if (cloudOn()) {
     const m = cloudSessionNow()?.agentmail;
     if (m?.proxied) {

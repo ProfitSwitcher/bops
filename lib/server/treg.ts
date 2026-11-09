@@ -2,6 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import { USAGE_BOT_HEADER } from "@/cloud/protocol";
 import type { Bot } from "@/lib/types";
+import { localOnly } from "@/lib/local/mode";
 import { appHeaders } from "./app-version";
 import { cloudOn, cloudProxy, cloudSessionNow } from "./cloud";
 import { allows, NeedsOk, type AskSpec } from "./permission";
@@ -37,7 +38,7 @@ const TREG = (process.env.TREG_URL || "https://treg.to").replace(/\/+$/, "");
 const ownToken = () => process.env.TREG_TOKEN?.trim() || "";
 
 /** treg is set up: this Mac's own token, or through Bops Cloud (the session says so). */
-export const tregOn = () => !!ownToken() || (cloudOn() && !!cloudSessionNow()?.treg);
+export const tregOn = () => !localOnly() && (!!ownToken() || (cloudOn() && !!cloudSessionNow()?.treg));
 
 /** Whether a bot has business data: treg is on and the user didn't turn it off for this bot. */
 export const dataOn = (b: Bot) => tregOn() && !b.dataOff;

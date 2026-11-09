@@ -1,5 +1,7 @@
 import OpenAI, { type ClientOptions } from "openai";
 import { APP_VERSION_HEADER, BOPS_STATE_LEVEL_HEADER, STATE_LEVEL, TELEMETRY_HEADER } from "@/cloud/protocol";
+import { localOnly } from "@/lib/local/mode";
+import { localOpenAIFetch } from "@/lib/local/openai-fetch";
 import { appVersion, telemetryHere } from "./app-version";
 import { cloudProxy } from "./cloud";
 
@@ -12,8 +14,10 @@ import { cloudProxy } from "./cloud";
  * `new OpenAI()` throws on import without one, which takes down every route that imports it.
  */
 export function openaiClient(opts: Omit<ClientOptions, "apiKey" | "defaultHeaders"> = {}) {
+  const local = localOnly();
   const client = new OpenAI({
     ...opts,
+    ...(local ? { fetch: localOpenAIFetch } : {}),
     // Which app is calling, and which state it may be given (an older app's calls are refused once a
     // newer one wrote the user's state: cloud/state.ts behindState), said to Bops Cloud only: read at
     // each call (and each sideband socket), and left out (null) when the app calls OpenAI directly.
@@ -29,6 +33,7 @@ export function openaiClient(opts: Omit<ClientOptions, "apiKey" | "defaultHeader
       },
     },
     apiKey: async () => {
+      if (local) return process.env.OPENAI_API_KEY?.trim() || "local";
       const via = cloudProxy("openai");
       if (via) return via.key;
       const key = process.env.OPENAI_API_KEY;
@@ -36,9 +41,10 @@ export function openaiClient(opts: Omit<ClientOptions, "apiKey" | "defaultHeader
       return key;
     },
   });
-  let direct = client.baseURL;
+  let direct = local ? "http://127.0.0.1:11434/v1" : client.baseURL;
   Object.defineProperty(client, "baseURL", {
     get: () => {
+      if (local) return direct;
       const via = cloudProxy("openai");
       return via ? `${via.url}/v1` : direct;
     },

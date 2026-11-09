@@ -1,0 +1,70 @@
+{
+  "llm": {
+    "endpoints": [
+      {
+        "id": "studio3",
+        "baseUrl": "http://127.0.0.1:11434/v1",
+        "provider": "ollama",
+        "apiKey": ""
+      },
+      {
+        "id": "studio1",
+        "baseUrl": "http://studio1.local:11435/v1",
+        "provider": "ollama",
+        "apiKey": "change-me"
+      },
+      {
+        "id": "studio1-mlx",
+        "baseUrl": "http://studio1.local:8081/v1",
+        "provider": "mlx",
+        "apiKey": "change-me"
+      },
+      {
+        "id": "geforce5",
+        "baseUrl": "http://geforce5.local:11435/v1",
+        "provider": "ollama",
+        "apiKey": "change-me"
+      }
+    ],
+    "roles": {
+      "planner": {
+        "chain": [
+          { "endpoint": "studio3", "model": "ornith-1.5:122b" },
+          { "endpoint": "studio1-mlx", "model": "qwen3.8-flash-next:125b-mlx" },
+          { "endpoint": "studio3", "model": "qwen3.5:122b" },
+          { "endpoint": "studio1", "model": "qwen3.5:122b" }
+        ]
+      },
+      "vision": {
+        "chain": [
+          { "endpoint": "studio3", "model": "qwen3.8:27b-q8_0" },
+          { "endpoint": "studio1", "model": "qwen3.8:27b-q8_0" },
+          { "endpoint": "geforce5", "model": "qwen3.8:latest", "quant": "q4_K_M" },
+          { "endpoint": "studio3", "model": "qwen3.5:122b" },
+          { "endpoint": "studio1", "model": "qwen3.5:122b" }
+        ]
+      },
+      "fast": {
+        "chain": [
+          { "endpoint": "studio3", "model": "nemotron-3.5-lightning:30b" },
+          { "endpoint": "studio1", "model": "nemotron-3.5-lightning:30b" },
+          { "endpoint": "studio3", "model": "qwen3:30b" },
+          { "endpoint": "studio1", "model": "qwen3:30b" },
+          { "endpoint": "geforce5", "model": "qwen3:4b" }
+        ]
+      },
+      "embed": {
+        "chain": [
+          { "endpoint": "studio3", "model": "qwen3-embedding:8b" },
+          { "endpoint": "studio1", "model": "qwen3-embedding:8b" },
+          { "endpoint": "geforce5", "model": "qwen3-embedding:8b" }
+        ]
+      }
+    }
+  },
+  "workers": [
+    { "id": "studio3", "url": "http://127.0.0.1:8791", "token": "", "kind": "native" },
+    { "id": "studio1", "url": "http://studio1.local:8791", "token": "change-me", "kind": "native" },
+    { "id": "geforce5", "url": "http://geforce5.local:8791", "token": "change-me", "kind": "native" }
+  ]
+}

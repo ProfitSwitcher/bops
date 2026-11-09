@@ -33,6 +33,7 @@ import { OpenBotComputer } from "./app-envs";
 import { WorkspaceDomains } from "./workspace-domains";
 import { ChatSwitch } from "./chat-switch";
 import { BotSettingsPage } from "./bot-settings";
+import { LocalModeNotice } from "./local-mode";
 import type { SettingsSection } from "@/lib/bot-settings";
 
 /** Your Mac's tab, and the chat's bot's profile (it follows the chat, like the computer tab); both open on demand. */
@@ -2302,6 +2303,7 @@ export function Settings({
         {team_.length > 0 && group("Orgo team only", team_)}
       </nav>
       <main data-settings-pane={pane} className={`flex min-h-0 min-w-0 flex-1 flex-col ${framed ? "" : "overflow-y-auto pb-8"}`}>
+        <LocalModeNotice />
         {body}
       </main>
     </div>

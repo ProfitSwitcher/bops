@@ -30,7 +30,8 @@
     ".next/dev/types/**/*.ts",
     ".scratch/next-sam/types/**/*.ts",
     ".scratch/next-sam/dev/types/**/*.ts",
-    "**/*.mts"
+    "**/*.mts",
+    "lib/local/node-sqlite.d.ts"
   ],
   "exclude": ["node_modules", "cloud"]
 }

@@ -2,6 +2,7 @@ import "server-only";
 import { readFileSync } from "node:fs";
 import { toFile } from "openai";
 import type { Message } from "@/lib/types";
+import { localOnly } from "@/lib/local/mode";
 import { openaiClient } from "./openai-client";
 import { saveUpload, uploadPath } from "./uploads";
 import { recordTokens, usageTags } from "./usage";
@@ -27,6 +28,7 @@ const EDITABLE: Record<string, string> = { "image/png": "png", "image/jpeg": "jp
 
 /** One picture, drawn from `prompt`, or made from `from` (pictures in the chat) when there are any. */
 export async function makeImage(botId: string, prompt: string, shape: Shape, from: Message["images"] = []): Promise<NonNullable<Message["images"]>> {
+  if (localOnly()) throw new Error("Drawing pictures is unavailable offline. This fork does not call a cloud image model.");
   const size = SHAPES[shape] ?? SHAPES.square;
   const files = (from ?? []).map((i) => uploadPath(i.id)).filter((f) => !!f && !!EDITABLE[f.type]).slice(0, MAX_FROM) as { path: string; type: string }[];
   const common = { prompt, size, quality: "medium" as const, output_format: "png" as const, n: 1 };

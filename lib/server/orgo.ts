@@ -13,6 +13,7 @@ import type { DeployState } from "@/lib/hosted-apps";
 import type { SharedRole, SharedWorkspace } from "@/lib/shared";
 import { folderKey, moveWorkspaceFolder } from "./workspace-skills";
 import { isIdentityToken } from "./vm-identity";
+import { localComputersOn, localOrgoAnswered, localOrgoCall } from "@/lib/local/orgo-adapter";
 
 /** Thin Orgo REST client (the published SDKs predate screens and clone). */
 
@@ -26,6 +27,7 @@ const base = () => `${orgoOrigin()}/api`;
  * which may be anyone's.
  */
 export async function apiKey(): Promise<string> {
+  if (localComputersOn()) return process.env.BOPS_LOCAL_WORKER_TOKEN || "local";
   const signedIn = await loadOrgoKey();
   if (signedIn) return signedIn;
   if (onRunner()) throw new Error("No ORGO_API_KEY on this computer");
@@ -123,6 +125,7 @@ async function codeOf(res: Response): Promise<string | undefined> {
  * Says which key went, so a caller can tell a runner's identity token was turned down.
  */
 async function answered<R>(url: string, init: RequestInit, timeoutMs: number, signal: AbortSignal | undefined, read: (res: Response) => Promise<R>) {
+  if (localComputersOn()) return localOrgoAnswered(url, init, timeoutMs, signal, read) as Promise<{ res: Response; text: R; key: string }>;
   if (signal?.aborted) throw signal.reason ?? new Error("Stopped");
   const timer = AbortSignal.timeout(timeoutMs);
   try {
@@ -156,6 +159,7 @@ async function call<T>(
   body?: unknown,
   { wait = method === "POST" || method === "PATCH", timeoutMs = CALL_MS, signal }: { wait?: boolean; timeoutMs?: number; signal?: AbortSignal } = {},
 ): Promise<T> {
+  if (localComputersOn()) return localOrgoCall<T>(method, path, body);
   const until = Date.now() + wakeWaitMs();
   let reauthed = false;
   for (let attempt = 0; ; attempt++) {

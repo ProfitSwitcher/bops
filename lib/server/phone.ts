@@ -1,4 +1,5 @@
 import "server-only";
+import { localOnly } from "@/lib/local/mode";
 import { planRoom } from "./plan-room";
 import { openaiClient } from "./openai-client";
 import { SidebandWS } from "openai/resources/live/sideband/ws";
@@ -64,7 +65,7 @@ import { checkVerification, forgetVerification, pendingConsentAt, pendingVerific
 const AP = "https://api.agentphone.ai/v1";
 const openai = openaiClient({ maxRetries: 0 });
 
-export const phoneOn = () => (cloudOn() ? !!cloudSessionNow()?.agentphone : !!process.env.AGENTPHONE_API_KEY);
+export const phoneOn = () => !localOnly() && (cloudOn() ? !!cloudSessionNow()?.agentphone : !!process.env.AGENTPHONE_API_KEY);
 
 /**
  * The webhook secrets that may sign a delivery: the Bops sub-account's webhook, and each agent
