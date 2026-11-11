@@ -59,6 +59,17 @@ export function localOnly(): boolean {
   return true;
 }
 
+/**
+ * Whether public internet is allowed. When local-only is off, this is always true.
+ * When local-only is on, set BOPS_ALLOW_EGRESS=1 to let web search and email reach
+ * the network without turning on cloud models or hosted sign-in.
+ */
+export function allowEgress(): boolean {
+  if (!localOnly()) return true;
+  const v = (process.env.BOPS_ALLOW_EGRESS ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "on";
+}
+
 export function loadConfig(): LocalConfig {
   const base = override ?? readConfigFile();
   return applyEnv(structuredClone(base));

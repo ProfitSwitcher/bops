@@ -8,7 +8,7 @@ import { networkInterfaces } from "node:os";
 import type { Readable, Transform } from "node:stream";
 import zlib from "node:zlib";
 import { appVersion } from "./app-version";
-import { localOnly } from "@/lib/local/mode";
+import { allowEgress } from "@/lib/local/mode";
 
 /**
  * Fetching a public web page for a bot (web_fetch in chat, page monitors), safely. Bops runs on the
@@ -390,7 +390,7 @@ function plain(e: unknown, u: URL, signal: AbortSignal): Error {
  * private address anywhere along the way, a file that isn't a page or a slow site throws.
  */
 export async function safeFetch(url: string, opts: { maxBytes?: number; timeoutMs?: number } = {}): Promise<Fetched> {
-  if (localOnly()) throw new FetchRefused("Opening public web pages is unavailable while Bops is in local-only mode.");
+  if (!allowEgress()) throw new FetchRefused("Opening public web pages is unavailable while Bops is in local-only mode.");
   const maxBytes = Math.max(1, opts.maxBytes ?? MAX_BYTES);
   const signal = AbortSignal.timeout(Math.max(1, opts.timeoutMs ?? TIMEOUT_MS));
   let u = checkUrl(url);

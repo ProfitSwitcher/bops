@@ -1,12 +1,13 @@
 /**
  * The Responses API shape this app already speaks, answered by a local chat model.
- * Computer actions are handed back to the app. Web search is answered here: it is
- * unavailable offline, and the model is told that instead of calling a search API.
+ * Computer actions are handed back to the app. Web search is answered here: offline
+ * it reports that search is unavailable; when BOPS_ALLOW_EGRESS=1 it searches the web.
  */
 import { randomUUID } from "node:crypto";
 import { chat, looseToolCalls, type ChatMessage, type ToolDef } from "./provider";
-import { roleChain, type Role } from "./mode";
+import { allowEgress, roleChain, type Role } from "./mode";
 import { isCloudModel } from "./models";
+import { webSearch } from "./web-search";
 
 type Store = Map<string, ChatMessage[]>;
 const g = globalThis as unknown as { bopsLocalResponses?: Store };
@@ -99,7 +100,20 @@ export function stripJsonFence(text: string): string {
   return (fenced ? fenced[1] : text).trim();
 }
 
+async function webSearchResult(args: string | undefined, fetchImpl?: typeof fetch): Promise<string> {
+  if (!allowEgress()) return "Web search is unavailable offline. Say so, and answer from what you already know.";
+  let query = "";
+  try {
+    const parsed = JSON.parse(args || "{}") as { query?: unknown };
+    query = typeof parsed.query === "string" ? parsed.query : "";
+  } catch {
+    query = "";
+  }
+  return webSearch(query, fetchImpl ?? fetch);
+}
+
 function schemaOf(body: ResponseBody): Record<string, unknown> | undefined {
+
   const format = body.text?.format;
   if (!format) return undefined;
   if (format.type === "json_schema" && format.schema && typeof format.schema === "object") return format.schema;
@@ -116,10 +130,17 @@ export async function runResponses(body: ResponseBody, fetchImpl?: typeof fetch)
   let result = await chat({ role, messages, tools, preferModel: prefer, jsonSchema, fetchImpl });
   let guard = 0;
   while (guard++ < 2 && result.toolCalls.length && result.toolCalls.every((c) => c.name === "web_search")) {
+    const toolMessages = await Promise.all(
+      result.toolCalls.map(async (c) => ({
+        role: "tool" as const,
+        tool_call_id: c.id,
+        content: await webSearchResult(c.arguments, fetchImpl),
+      })),
+    );
     messages = [
       ...messages,
       { role: "assistant", content: result.content || null, tool_calls: result.toolCalls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.arguments } })) },
-      ...result.toolCalls.map((c) => ({ role: "tool" as const, tool_call_id: c.id, content: "Web search is unavailable offline. Say so, and answer from what you already know." })),
+      ...toolMessages,
     ];
     result = await chat({ role, messages, tools, preferModel: result.model, jsonSchema, fetchImpl });
   }
@@ -266,7 +287,9 @@ function toTools(tools: NonNullable<ResponseBody["tools"]>): ToolDef[] {
         type: "function",
         function: {
           name: "web_search",
-          description: "Look something up on the public web. Offline, this only reports that search is unavailable.",
+          description: allowEgress()
+            ? "Look something up on the public web. Returns titles, URLs, and short snippets."
+            : "Look something up on the public web. Offline, this only reports that search is unavailable.",
           parameters: { type: "object", properties: { query: { type: "string" } } },
         },
       });
