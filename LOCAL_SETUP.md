@@ -150,7 +150,7 @@ Settings shows the same list.
 
 Voice transcription stays off until a local whisper server is set. `BOPS_LLM_TRANSCRIBE_URL` is an HTTP server (for example `http://127.0.0.1:8178/inference`). Or set `BOPS_WHISPER_BIN` and `BOPS_WHISPER_MODEL` for whisper.cpp. `scripts/setup-whisper.sh` installs those with Homebrew on the Mac that runs Bops. It is optional. The call button still says live voice is not used. Codex-on-this-Mac is refused because the Codex CLI calls OpenAI. Use a local worker on that Mac instead.
 
-`BOPS_ALLOW_EGRESS=1` keeps local-only mode and lets web search, page fetches, and email leave the machine. Cloud model keys stay off. Shell commands from chat run on this Mac through the worker (`run_command`), in `~/bops/.data/workspaces/<bot>`. `rm -rf`, `sudo`, a force-push, a write outside your home folder, and anything that would stop Bops wait for an approval card. The bot browser shows one shared screenshot labeled Studio 3 screen.
+`BOPS_ALLOW_EGRESS=1` keeps local-only mode and lets web search, page fetches, and email leave the machine. Cloud model keys stay off. Optional Shared Brain (`BOPS_SHARED_BRAIN_URL` and `BOPS_SHARED_BRAIN_KEY`, tailnet only) is searched with every bot's memory and can be written with `save_shared_memory`. The address `100.64.0.0/10` is allowed even when public egress is off. A miss there does not block the chat. Shell commands from chat run on this Mac through the worker (`run_command`), in `~/bops/.data/workspaces/<bot>`. `rm -rf`, `sudo`, a force-push, a write outside your home folder, and anything that would stop Bops wait for an approval card. The bot browser shows one shared screenshot labeled Studio 3 screen.
 
 ## Cloud dependencies
 

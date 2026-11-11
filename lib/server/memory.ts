@@ -3,8 +3,10 @@ import { LIGHT } from "./routing";
 import { setting } from "./models";
 import { Honcho, Session as HonchoSessionRef, type Peer, type Session as HonchoSession } from "@honcho-ai/sdk";
 import { localOnly } from "@/lib/local/mode";
-import { chatStage, localNeedsMemory } from "@/lib/local/fast-chat";
+import { chatStage } from "@/lib/local/fast-chat";
 import { addFacts, asThirdPerson, closestFact, listFacts, sameFact } from "@/lib/local/memory-store";
+import { factsToKeep, statesUserFact } from "@/lib/local/memory-facts";
+import { searchSharedBrain } from "@/lib/local/shared-brain";
 import { localBank } from "@/lib/local/honcho-local";
 import { openaiClient } from "./openai-client";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -281,6 +283,7 @@ async function card(b: Binding) {
  */
 export async function memoryBlock(where: Where, about: string, ms = 2500, { search = true }: { search?: boolean } = {}): Promise<string> {
   if (!on()) return "";
+  const sharedP = searchSharedBrain(about, 3);
   const sc = scopeIn(where);
   const owner = ownerName();
   // A bot that keeps its memory to itself reads its own bank, and the team's too while it still knows what the team
@@ -310,13 +313,15 @@ export async function memoryBlock(where: Where, about: string, ms = 2500, { sear
       })(),
       ms,
     );
-    if (!res) return "";
-    const [lines, learned] = res;
-    if (!lines.length && !learned.length) return "";
+    const shared = await Promise.race([sharedP, new Promise<{ content: string }[]>((r) => setTimeout(() => r([]), 300))]);
+    if (!res && !shared.length) return "";
+    const [lines, learned] = res ?? [[], []];
+    if (!lines.length && !learned.length && !shared.length) return "";
     return [
       `What you know about ${owner}, from their long-term memory. Use it so they don't have to repeat themselves; it can be out of date or wrong, and what they say now wins. Don't recite it back to them.`,
       ...(lines.length ? [`About ${owner}:`, ...lines.map((l) => `- ${l}`)] : []),
       ...(learned.length ? ["Learned before, relevant now:", ...learned.map((l) => `- ${l}`)] : []),
+      ...(shared.length ? ["Shared memory (other machines):", ...shared.map((h) => `- ${h.content}`)] : []),
     ].join("\n");
   } catch {
     return "";
@@ -575,31 +580,25 @@ export function rememberMessage(ws: Where, chatId: string, messageId: string, sa
  */
 export function rememberAfterReply(where: Where, chatId: string, said: string, opts: { skip?: boolean } = {}) {
   if (!localOnly() || !on() || !said.trim()) return;
-  if (opts.skip) {
+  if (opts.skip || !statesUserFact(said)) {
     chatStage("memory-facts", Date.now(), "skip");
     return;
   }
   const started = Date.now();
   void (async () => {
-    const judge = localNeedsMemory(said);
-    chatStage("memory-judge", started, judge ? "yes" : "no");
-    if (!judge) return;
+    chatStage("memory-judge", started, "yes");
     const writeAt = Date.now();
     const { chat } = await import("@/lib/local/provider");
     const result = await chat({
       role: "fast",
       messages: [
-        { role: "system", content: "Write each lasting fact in the third person, one short sentence per line, at most three. Never first person. If there is no lasting fact, write NONE." },
+        { role: "system", content: "The user text is the only source. Write lasting facts the user stated about themselves, one third-person sentence per line, at most three. Do not record what an assistant did, offered, or was asked to do. A request to run a command or update an app is not a fact. If there is no lasting fact, write NONE." },
         { role: "user", content: said.slice(0, 1500) },
       ],
     });
     const name = ownerName();
     const bank = bindingOf(scopeIn(where)).bank;
-    const facts = result.content
-      .split("\n")
-      .map((l) => asThirdPerson(l.replace(/^[-*•\d.)\s]+/, "").trim(), name))
-      .filter((l) => l && l !== "NONE" && l.length < 400)
-      .slice(0, 3);
+    const facts = factsToKeep(said, result.content.split("\n"), name);
     const fresh: string[] = [];
     for (const fact of facts) {
       const hit = await closestFact(bank, fact).catch(() => null);

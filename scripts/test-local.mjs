@@ -984,6 +984,52 @@ await check("commands and fact questions are not a no-tools chat", async () => {
   assert.match(tabs, /Search the web for/);
 });
 
+await check("shared brain merges search and user-only facts stay", async () => {
+  const { factsToKeep, statesUserFact } = await import("../lib/local/memory-facts.ts");
+  const { searchSharedBrain, saveSharedBrain } = await import("../lib/local/shared-brain.ts");
+  const { isLocalAddress } = await import("../lib/local/egress.mjs");
+  const assistant = "I'll update the Hermes app for you and restart it after the download.";
+  assert.equal(statesUserFact(assistant), false);
+  assert.deepEqual(
+    factsToKeep(assistant, ["The user is updating the Hermes app.", "The user will restart Hermes after the download.", "The user downloaded a Hermes update."], "Alvis"),
+    [],
+  );
+  assert.deepEqual(factsToKeep("I prefer tea in the morning", ["Alvis prefers tea in the morning.", "Alvis prefers tea in the morning.", "Alvis is updating the Hermes app."], "Alvis"), ["Alvis prefers tea in the morning."]);
+  assert.equal(isLocalAddress("100.65.194.95"), true);
+  assert.equal(isLocalAddress("100.63.1.1"), false);
+  assert.equal(isLocalAddress("100.128.0.1"), false);
+  const seen = [];
+  const brain = await listen(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    seen.push({ url: req.url, auth: req.headers.authorization, body });
+    if (req.url === "/api/search") return json(res, { results: [{ memory: { content: "The shop truck is blue." }, similarity_score: 0.9 }] });
+    if (req.url === "/api/memories") return json(res, { ok: true });
+    return json(res, { error: "no" }, 404);
+  });
+  process.env.BOPS_SHARED_BRAIN_URL = brain.url;
+  process.env.BOPS_SHARED_BRAIN_KEY = "tailnet-key";
+  process.env.BOPS_SHARED_BRAIN_MACHINE = "studio3";
+  try {
+    const hits = await searchSharedBrain("truck");
+    assert.deepEqual(hits, [{ content: "The shop truck is blue." }]);
+    assert.equal(await saveSharedBrain("Hermes update finished.", "nova"), true);
+    assert.deepEqual(await searchSharedBrain(""), []);
+    const down = await searchSharedBrain("truck", 3, async () => { throw new Error("down"); });
+    assert.deepEqual(down, []);
+  } finally {
+    delete process.env.BOPS_SHARED_BRAIN_URL;
+    delete process.env.BOPS_SHARED_BRAIN_KEY;
+    delete process.env.BOPS_SHARED_BRAIN_MACHINE;
+    brain.server.close();
+  }
+  assert.equal(seen[0].auth, "Bearer tailnet-key");
+  assert.equal(seen[1].body.tags.join(","), "bops,bot:nova,machine:studio3");
+  assert.match(readFileSync("lib/server/memory.ts", "utf8"), /statesUserFact/);
+  assert.match(readFileSync("lib/server/chat.ts", "utf8"), /save_shared_memory/);
+});
+
 await check("egress tripwire refuses public hosts and still allows loopback", async () => {
   installEgressGuard();
   await assert.rejects(fetch("https://api.openai.com/v1/models"), LocalOnlyError);

@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { dataRoot } from "../server/user-paths";
 import { embed } from "./provider";
 import { loadConfig } from "./mode";
+import { searchSharedBrain } from "./shared-brain";
 
 export type Fact = { id: string; content: string; sessionId: string | null; createdAt: string };
 
@@ -176,7 +177,12 @@ export async function searchFacts(bank: string, query: string, limit: number): P
       return { fact: row(r), score: Math.max(cosine, lexical) };
     })
     .sort((a, b) => b.score - a.score);
-  return ranked.slice(0, limit).map((r) => r.fact);
+  const local = ranked.slice(0, limit).map((r) => r.fact);
+  const shared = await searchSharedBrain(query, 3);
+  const extra = shared
+    .filter((h) => !local.some((f) => f.content.toLowerCase().includes(h.content.toLowerCase().slice(0, 48))))
+    .map((h) => ({ id: "shared", content: `Shared memory: ${h.content}`, sessionId: null, createdAt: new Date().toISOString() }));
+  return [...local, ...extra];
 }
 
 export function cardLines(bank: string): string[] {

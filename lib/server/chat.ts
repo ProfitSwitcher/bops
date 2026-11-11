@@ -21,6 +21,7 @@ import { answerRoute } from "@/lib/local/responses";
 import { allowEgress, localOnly } from "@/lib/local/mode";
 import { chatClock, chatStage, isSimpleLocalChat, promisesAction, SIMPLE_CHAT_PROMPT, stripImitatedDeeds, taskFromPromise } from "@/lib/local/fast-chat";
 import { commandNeedsApproval, runLocalShell } from "@/lib/local/shell";
+import { saveSharedBrain, sharedBrainOn } from "@/lib/local/shared-brain";
 import { contactLine, createBot, namesTheUser } from "./bots";
 import { creditsOut, noteOutOfCredit, outOfCreditWords } from "./cloud";
 import { noOwnComputer } from "./plan";
@@ -852,6 +853,7 @@ const LOOKUPS = new Set([
   "draft_reply",
   "web_fetch",
   "run_command",
+  "save_shared_memory",
   "schedule",
   "manage_routine",
   "read_skill",
@@ -2396,6 +2398,13 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
             fn("recall", `Ask ${owner}'s long-term memory something you don't see below ("what's their shipping address?", "what did we decide about pricing?", "who is Dana Brooks?").`, {
               question: { type: "string" },
             }),
+            ...(localOnly() && sharedBrainOn()
+              ? [
+                  fn("save_shared_memory", "Save an important outcome to Shared Brain so other machines can find it. Not for the user's personal preferences (use remember for those).", {
+                    content: { type: "string", description: "What was done and the result, in one or two sentences." },
+                  }),
+                ]
+              : []),
           ]
         : []),
       ...(b.isMain
@@ -2716,6 +2725,10 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       if (CRM_TOOL_NAMES.has(name)) readFrom.add("Your CRM");
       if (ORBIT_TOOL_NAMES.has(name)) readFrom.add("Knowledge");
       // Into and out of its memory scope: its own bank while it keeps its memory to itself (lib/chain.ts).
+      if (name === "save_shared_memory") {
+        const ok = await saveSharedBrain(String(a.content ?? ""), b.name);
+        return ok ? "Saved to Shared Brain." : "Shared Brain didn't answer. Nothing was saved there.";
+      }
       if (name === "run_command") {
         if (!localOnly()) return "run_command is only available on this Mac.";
         const command = String(a.command ?? "");
