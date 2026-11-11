@@ -38,7 +38,9 @@ const { localComputerTurn, screenResetPlan, workerAction, SCREEN_LOCKED } = awai
 const { solidPng, fitPng, scaleCoord } = await import("../lib/local/png-fit.ts");
 const { asThirdPerson, sameFact } = await import("../lib/local/memory-store.ts");
 const { scaleAction } = await import("../lib/local/computer-use.ts");
-const { isSimpleLocalChat, localNeedsMemory, stripImitatedDeeds, taskFromPromise } = await import("../lib/local/fast-chat.ts");
+const { isSimpleLocalChat, localNeedsMemory, promisesAction, stripImitatedDeeds, taskFromPromise } = await import("../lib/local/fast-chat.ts");
+const { commandNeedsApproval, botWorkspace, capOutput, shellQuote } = await import("../lib/local/shell.ts");
+const { STUDIO_SCREEN_LABEL } = await import("../lib/local/mac-screen.ts");
 const { transcribeLocal } = await import("../lib/local/speech.ts");
 const { deleteSession, listFacts } = await import("../lib/local/memory-store.ts");
 const { runResponses, resetResponsesForTests } = await import("../lib/local/responses.ts");
@@ -949,6 +951,37 @@ await check("local settings do not open an external account or billing page", as
     else process.env.BOPS_LOCAL_CONFIG = prev;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+await check("commands and fact questions are not a no-tools chat", async () => {
+  assert.equal(isSimpleLocalChat("hi"), true);
+  assert.equal(isSimpleLocalChat("pong"), true);
+  assert.equal(isSimpleLocalChat("I usually type `hermes update` in the terminal"), false);
+  assert.equal(isSimpleLocalChat("how many people are in montana state?"), false);
+  assert.equal(isSimpleLocalChat("what's the weather in missoula"), false);
+  assert.equal(isSimpleLocalChat("brew upgrade ffmpeg"), false);
+  assert.equal(promisesAction("I can run that for you. Let me try it."), true);
+  assert.equal(promisesAction("I'm here."), false);
+  assert.equal(commandNeedsApproval("ollama list"), null);
+  assert.equal(commandNeedsApproval("hermes update"), null);
+  assert.equal(commandNeedsApproval("brew upgrade ffmpeg"), null);
+  assert.equal(commandNeedsApproval("rm -rf ~/notes"), "deletes files recursively");
+  assert.equal(commandNeedsApproval("sudo reboot"), "uses sudo");
+  assert.equal(commandNeedsApproval("git push --force origin main"), "force-pushes");
+  assert.equal(commandNeedsApproval("echo hi > /etc/hosts"), "writes outside your home folder");
+  assert.equal(commandNeedsApproval("pkill -f bops"), "would stop Bops");
+  assert.match(botWorkspace("nova"), /bops\/\.data\/workspaces\/nova$/);
+  assert.match(shellQuote("/tmp/a b"), /'/);
+  assert.match(capOutput("x".repeat(20), 8), /truncated/);
+  assert.equal(STUDIO_SCREEN_LABEL, "Studio 3 screen");
+  const screens = (await import("../lib/local/orgo-adapter.ts")).localScreens();
+  assert.ok(screens.every((s) => s.label.includes("Studio 3 screen")));
+  assert.match(readFileSync("lib/server/browser-view.ts", "utf8"), /if \(localOnly\(\)\) return localStudioScreen/);
+  assert.match(readFileSync("app/api/screen/route.ts", "utf8"), /workerScreenPng/);
+  assert.match(readFileSync("lib/server/chat.ts", "utf8"), /run_command/);
+  const tabs = readFileSync("components/app/panel-tabs.tsx", "utf8");
+  assert.match(tabs, /local && !egress/);
+  assert.match(tabs, /Search the web for/);
 });
 
 await check("egress tripwire refuses public hosts and still allows loopback", async () => {

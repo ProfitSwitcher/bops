@@ -1,3 +1,5 @@
+import { localOnly } from "@/lib/local/mode";
+import { workerScreenPng } from "@/lib/local/mac-screen";
 import { computerAsleepError, orgo, screenId } from "@/lib/server/orgo";
 import { cdpPort, macTaskPort, screenshot } from "@/lib/server/local";
 import { bot, getState } from "@/lib/server/store";
@@ -13,6 +15,15 @@ export const dynamic = "force-dynamic";
 export async function GET(request: Request) {
   const url = new URL(request.url);
   const b = bot(url.searchParams.get("bot") ?? "");
+  if (localOnly()) {
+    if (!b) return new Response("no bot", { status: 404 });
+    try {
+      const bytes = await workerScreenPng();
+      return new Response(new Uint8Array(bytes), { headers: { "Content-Type": "image/png", "Cache-Control": "no-store", "X-Bops-Screen": "Studio 3 screen" } });
+    } catch (e) {
+      return new Response((e as Error).message, { status: 502 });
+    }
+  }
   const display = Number(url.searchParams.get("display") ?? 99);
   const scale = Number(url.searchParams.get("scale") ?? 0.75);
   if (!b) return new Response("no bot", { status: 404 });

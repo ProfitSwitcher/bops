@@ -18,8 +18,9 @@ import { ORBIT_OWNER_ONLY, ORBIT_TOOL_NAMES, ORBIT_TOOLS, orbitNote, orbitNowLin
 import type { ResponseInputItem } from "openai/resources/responses/responses";
 import { openaiClient } from "./openai-client";
 import { answerRoute } from "@/lib/local/responses";
-import { localOnly } from "@/lib/local/mode";
-import { chatClock, chatStage, isSimpleLocalChat, stripImitatedDeeds, taskFromPromise } from "@/lib/local/fast-chat";
+import { allowEgress, localOnly } from "@/lib/local/mode";
+import { chatClock, chatStage, isSimpleLocalChat, promisesAction, SIMPLE_CHAT_PROMPT, stripImitatedDeeds, taskFromPromise } from "@/lib/local/fast-chat";
+import { commandNeedsApproval, runLocalShell } from "@/lib/local/shell";
 import { contactLine, createBot, namesTheUser } from "./bots";
 import { creditsOut, noteOutOfCredit, outOfCreditWords } from "./cloud";
 import { noOwnComputer } from "./plan";
@@ -850,6 +851,7 @@ const LOOKUPS = new Set([
   "text_me",
   "draft_reply",
   "web_fetch",
+  "run_command",
   "schedule",
   "manage_routine",
   "read_skill",
@@ -2083,10 +2085,13 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       const role = effortFloor === "high" ? ("heavy" as const) : ("planner" as const);
       const result = await chat({
         role,
-        messages: [{ role: "system", content: `You are ${b.name}, a local assistant on this Mac. Reply in one or two short sentences.` }, ...recent],
+        messages: [{ role: "system", content: `You are ${b.name}, a local assistant on this Mac. ${SIMPLE_CHAT_PROMPT}` }, ...recent],
       });
       chatStage("simple-model", turnAt, `role=${role} prompt=${recent.reduce((n, m) => n + m.content.length, 0)}`);
       const text = result.content.trim() || "The local model returned an empty reply.";
+      if (promisesAction(text)) {
+        chatStage("simple-escalate", turnAt);
+      } else {
       rememberAfterReply(scopeOf(botId), chatId, askedText);
       addMessage({
         chatId,
@@ -2097,6 +2102,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
         model: { id: result.model, endpoint: result.endpoint, ...(result.cloud ? { cloud: true } : {}) },
       });
       return { text };
+      }
     }
     // How much thinking the message needs (routing.ts routeChat: Jev, alongside what's below). Only the user's own.
     const routing = waiting
@@ -2117,6 +2123,13 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     const all = [
       // First, so it never moves the cached prefix. Not for someone else's turn: what they wrote could send it to their site with what it read here.
       ...(opts.outside ? [] : [WEB_SEARCH]),
+      ...(localOnly()
+        ? [
+            fn("run_command", `Run one shell command on this Mac, in this bot's workspace folder. Use this for terminal work (hermes update, brew, ollama list). Do not click Terminal.app. The reply must quote what the command printed. Commands that delete recursively, use sudo, force-push, write outside the home folder, or stop Bops wait for ${owner}'s approval and do not run until they allow it.`, {
+              command: { type: "string", description: "The command, as typed in a terminal." },
+            }),
+          ]
+        : []),
       ...(answering
         ? [
             fn("react", "Tapback the message you're answering, like in iMessage: a quick acknowledgement, or instead of a reply when words would add nothing (\"thanks!\" gets a love, \"sounds good\" gets a like).", {
@@ -2543,6 +2556,9 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     const instructions = [
       persona(b, others),
       opts.outside ? "" : SEARCHING,
+      localOnly() && allowEgress() ? "Web search is available from this Mac. Use web_search for current facts, weather, prices, and news. Do not say that web search is offline." : "",
+      localOnly() && !allowEgress() ? "Web search is off on this Mac until BOPS_ALLOW_EGRESS=1. If asked to look something up, say that, and do not pretend you searched." : "",
+      localOnly() ? "To run a shell command on this Mac, call run_command. Do not say you will run it unless that tool has returned the output." : "",
       "If a tapback says it all (thanks, ok, sounds good), react instead of replying.",
       `When you start, hand off or tell a task something, make a picture${apps ? ", or make or change an app" : ""}, its \`say\` is your reply: write no other text, and don't answer the request yourself; the task will.`,
       opts.outside ? "" : appsNote(b, "chat"),
@@ -2700,6 +2716,14 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
       if (CRM_TOOL_NAMES.has(name)) readFrom.add("Your CRM");
       if (ORBIT_TOOL_NAMES.has(name)) readFrom.add("Knowledge");
       // Into and out of its memory scope: its own bank while it keeps its memory to itself (lib/chain.ts).
+      if (name === "run_command") {
+        if (!localOnly()) return "run_command is only available on this Mac.";
+        const command = String(a.command ?? "");
+        const why = commandNeedsApproval(command);
+        if (why && !approved) throw new NeedsOk({ action: `Run on this Mac: ${command.slice(0, 160)}`, resources: [why], preview: command.slice(0, 2000) });
+        const ran = await runLocalShell({ command, botId }).catch(failed);
+        return typeof ran === "string" ? ran : `exit code ${ran.exitCode}\nworking directory ${ran.cwd}\n${ran.output}`;
+      }
       if (name === "remember") {
         remembered = true;
         const t = Date.now();

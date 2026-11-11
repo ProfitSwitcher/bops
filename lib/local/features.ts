@@ -9,7 +9,7 @@ export type LocalFeature = {
 };
 
 export function offlineFeatures(): LocalFeature[] {
-  const speech = !!process.env.BOPS_LLM_TRANSCRIBE_MODEL?.trim();
+  const speech = !!(process.env.BOPS_LLM_TRANSCRIBE_URL?.trim() || process.env.BOPS_LLM_TRANSCRIBE_MODEL?.trim() || (process.env.BOPS_WHISPER_BIN?.trim() && process.env.BOPS_WHISPER_MODEL?.trim()));
   const net = allowEgress();
   const mailKey = !!process.env.AGENTMAIL_API_KEY?.trim();
   return [
@@ -25,7 +25,7 @@ export function offlineFeatures(): LocalFeature[] {
     { id: "data", name: "Business data", available: false, reason: "treg is an internet data service. Lookups are unavailable offline." },
     { id: "web", name: "Web search", available: net, reason: net ? "Public web search and page fetches go out from this machine." : "Public web search and page fetches are unavailable offline. The bot is told that, instead of calling a search API." },
     { id: "images", name: "Image generation", available: false, reason: "Cloud image models are not called. Drawing pictures is unavailable offline." },
-    { id: "speech", name: "Voice transcription", available: speech, reason: speech ? "Transcription uses BOPS_LLM_TRANSCRIBE_MODEL on a local endpoint." : "Voice transcription is unavailable offline until BOPS_LLM_TRANSCRIBE_MODEL is set to a local speech model." },
+    { id: "speech", name: "Voice transcription", available: speech, reason: speech ? "Transcription uses a local whisper server (BOPS_LLM_TRANSCRIBE_URL) or whisper.cpp (BOPS_WHISPER_BIN and BOPS_WHISPER_MODEL)." : "Voice transcription is off until BOPS_LLM_TRANSCRIBE_URL or BOPS_WHISPER_BIN and BOPS_WHISPER_MODEL is set. Audio is not sent to a cloud." },
     { id: "hosting", name: "Publishing apps on the web", available: false, reason: "Public hosting, domains, and Orgo deploys are unavailable offline." },
   ];
 }

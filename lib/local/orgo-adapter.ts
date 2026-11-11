@@ -12,20 +12,20 @@ const sessions = new Map<string, { worker: string; remote: string; name: string 
 /** The four displays a Bops computer is expected to have. Matches lib/types DISPLAYS. */
 const LOCAL_DISPLAYS = [100, 101, 102, 99];
 
-export type LocalScreen = { id: string; display: string; width: number; height: number; vnc_port: number; ws_port: number };
+export type LocalScreen = { id: string; display: string; width: number; height: number; vnc_port: number; ws_port: number; label: string };
 
 const extraScreens: LocalScreen[] = [];
 
 export function localScreens(): LocalScreen[] {
   return [
-    ...LOCAL_DISPLAYS.map((display, i) => ({ id: `s${display}`, display: `:${display}`, width: 1280, height: 960, vnc_port: 5900 + i, ws_port: 6080 + i })),
+    ...LOCAL_DISPLAYS.map((display, i) => ({ id: `s${display}`, display: `:${display}`, width: 1280, height: 960, vnc_port: 5900 + i, ws_port: 6080 + i, label: "Studio 3 screen (shared, not a separate VNC display)" })),
     ...extraScreens,
   ];
 }
 
 function addLocalScreen(): LocalScreen {
   const n = 103 + extraScreens.length;
-  const screen = { id: `s${n}`, display: `:${n}`, width: 1280, height: 960, vnc_port: 5910 + extraScreens.length, ws_port: 6090 + extraScreens.length };
+  const screen = { id: `s${n}`, display: `:${n}`, width: 1280, height: 960, vnc_port: 5910 + extraScreens.length, ws_port: 6090 + extraScreens.length, label: "Studio 3 screen (shared, not a separate VNC display)" };
   extraScreens.push(screen);
   return screen;
 }

@@ -7,6 +7,7 @@ import { initialsFrom } from "./account";
 import { BrowserCursors, cursorFeed } from "./browser-cursor";
 import { Mascot } from "./mascot";
 import { BrowserGoTo, hostOf, toAddress } from "./panel-tabs";
+import { useLocalOnly } from "./local-mode";
 
 /*
  * The bot's browser, beside the chat: the page in front of the Chrome of the screen its task holds, live, for the owner
@@ -82,6 +83,42 @@ const MOVE_MS = 50;
  * edge over (its bar is the tab's, as a web tab's is).
  */
 export function BotBrowser({ bot, project = "", hidden = false, inset = false }: { bot: Bot; project?: string; hidden?: boolean; inset?: boolean }) {
+  const local = useLocalOnly();
+  if (local) return <StudioScreen botId={bot.id} name={bot.name} hidden={hidden} inset={inset} />;
+  return <RemoteBrowser bot={bot} project={project} hidden={hidden} inset={inset} />;
+}
+
+/** This Mac's screen, shared by every bot. Screenshots come from the local worker, not an Orgo browser. */
+function StudioScreen({ botId, name, hidden, inset }: { botId: string; name: string; hidden: boolean; inset: boolean }) {
+  const [tick, setTick] = useState(0);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    if (hidden) return;
+    const timer = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(timer);
+  }, [hidden]);
+  return (
+    <div className={`flex min-h-0 flex-1 flex-col ${inset ? "" : "bg-[#F6F6F4]"}`} data-studio-screen>
+      <div className="flex items-center gap-2 px-3 py-2 text-[13px]">
+        <span className="font-semibold">Studio 3 screen</span>
+        <span className="text-[#6B6B6B]">Shared by the bots on this Mac. {name} does not have a separate display.</span>
+      </div>
+      {hidden ? null : failed ? (
+        <p className="px-3 text-[13px] text-[#6B6B6B]">The local worker did not return a screenshot. It runs on this Mac, on port 8791.</p>
+      ) : (
+        <img
+          alt="Studio 3 screen"
+          src={`/api/screen?bot=${encodeURIComponent(botId)}&t=${tick}`}
+          onError={() => setFailed(true)}
+          onLoad={() => setFailed(false)}
+          className="min-h-0 w-full flex-1 object-contain"
+        />
+      )}
+    </div>
+  );
+}
+
+function RemoteBrowser({ bot, project = "", hidden = false, inset = false }: { bot: Bot; project?: string; hidden?: boolean; inset?: boolean }) {
   const [frame, setFrame] = useState<{ meta: BrowserFrameMeta } | null>(null);
   const [page, setPage] = useState<Page | null>(null);
   const [control, setControl] = useState<{ by: BrowserPerson | null; you: boolean }>({ by: null, you: false });

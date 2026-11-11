@@ -1,4 +1,4 @@
-import { localOnly } from "@/lib/local/mode";
+import { allowEgress, localOnly } from "@/lib/local/mode";
 
 export const dynamic = "force-dynamic";
 
@@ -8,5 +8,5 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   const local = localOnly();
-  return Response.json({ selfHosted: local || process.env.BOPS_SELF_HOSTED === "1", localOnly: local });
+  return Response.json({ selfHosted: local || process.env.BOPS_SELF_HOSTED === "1", localOnly: local, allowEgress: allowEgress() });
 }

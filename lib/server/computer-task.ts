@@ -6,6 +6,7 @@ import { openaiClient } from "./openai-client";
 import { sleptSince } from "./awake";
 import { computerAsleepError, computerWakingError, orgo, OrgoTimeout, screenId } from "./orgo";
 import { APP_TOOLS, findAppActions, runAppAction } from "./composio";
+import { commandNeedsApproval, runLocalShell } from "@/lib/local/shell";
 import { askFor, declined, declinedStep, NeedsOk, Paused, type AskSpec } from "./permission";
 import { taskWrite } from "@/lib/permission";
 import { shownAddress } from "@/lib/plain-words";
@@ -15,7 +16,6 @@ import { callApi, callApiTool, usableKeys } from "./keys";
 import { changeFiles, changeFilesTool, type ChangeArgs } from "./repo-change";
 import { readSkill, READ_SKILL_TOOL } from "./workspace-skills";
 import { actOnLocalComputer } from "@/lib/local/computer-session";
-import { localOrgoCall } from "@/lib/local/orgo-adapter";
 import { localOnly } from "@/lib/local/mode";
 import { bot, patchSession, session, stateEpoch } from "./store";
 import { recordTokens, usageTags } from "./usage";
@@ -787,8 +787,10 @@ async function runFunction(t: ComputerTurn, o: OutputItem, guard: PageGuard = ne
       if (localOnly()) {
         if (LINUX_ONLY.test(command)) output = "That command isn't run on this Mac. Use the screen.";
         else {
-          const r = await localOrgoCall<{ output: string; exit_code: number }>("POST", `/computers/${encodeURIComponent(t.computerId)}/bash`, { command });
-          output = `exit code ${r.exit_code}\n${clip(r.output)}`;
+          const why = commandNeedsApproval(command);
+          if (why && !opts.approved) throw new NeedsOk({ action: `Run on this Mac: ${command.slice(0, 160)}`, resources: [why], preview: command.slice(0, 2000) });
+          const ran = await runLocalShell({ command, botId: s.botId });
+          output = `exit code ${ran.exitCode}\nworking directory ${ran.cwd}\n${clip(ran.output)}`;
         }
       } else {
       const timeout = Math.min(300, Math.max(5, Number(args.timeout_seconds) || 60));

@@ -15,7 +15,7 @@ import { KnowledgeIcon, type OrbitSection } from "./memory-categories";
 import { KeyIcon } from "./screen-cards";
 import { MonitorIcon, teamOf } from "./ui";
 import { readOnly, seesBrowser } from "@/lib/shared";
-import { useLocalOnly } from "./local-mode";
+import { useAllowEgress, useLocalOnly } from "./local-mode";
 
 /*
  * The right side is a row of tabs in the title bar, like a browser's. The first tab is always the
@@ -357,10 +357,14 @@ function GlobeIcon() {
 type WebviewElement = HTMLElement & { goBack: () => void; goForward: () => void; reload: () => void; getURL: () => string; canGoBack: () => boolean; loadURL: (url: string) => Promise<void> };
 
 /** What was typed in an address bar, as a URL: an address as is (https:// added), anything else a Google search. */
-export const toAddress = (typed: string, local = false) => {
+export const toAddress = (typed: string, local = false, egress = false) => {
   const a = typed.trim();
   if (/^[a-z]+:\/\//i.test(a)) return a;
-  if (/\s/.test(a) || !a.includes(".")) return local || !a ? "" : `https://www.google.com/search?q=${encodeURIComponent(a)}`;
+  if (/\s/.test(a) || !a.includes(".")) {
+    if (!a || (local && !egress)) return "";
+    const q = encodeURIComponent(a);
+    return local ? `https://duckduckgo.com/?q=${q}` : `https://www.google.com/search?q=${q}`;
+  }
   return `https://${a}`;
 };
 
@@ -382,9 +386,10 @@ export function WebTab({ url, hidden, user, onPage, botBrowser }: { url: string;
   // What's in the address bar while the user edits it (null: it shows the page's address).
   const [typing, setTyping] = useState<string | null>(null);
   const local = useLocalOnly();
+  const egress = useAllowEgress();
   const go = (typed: string) => {
     if (!typed.trim()) return;
-    const next = toAddress(typed, local);
+    const next = toAddress(typed, local, egress);
     if (!next) return;
     setTyping(null);
     setAt(next);
@@ -503,13 +508,14 @@ export function NewTab({
 }) {
   const [address, setAddress] = useState("");
   const local = useLocalOnly();
+  const egress = useAllowEgress();
   const go = () => {
-    const next = toAddress(address, local);
+    const next = toAddress(address, local, egress);
     if (next) onWeb(next);
   };
   const typed = address.trim();
   // The site it'll open, when what's typed is an address rather than a search.
-  const target = typed ? toAddress(typed, local) : "";
+  const target = typed ? toAddress(typed, local, egress) : "";
   const site = target && !target.startsWith("https://www.google.com/search?") ? hostOf(target).replace(/^www\./, "") : null;
   return (
     <div className="motion-fade-in flex min-h-0 flex-1 flex-col items-center gap-6 overflow-y-auto px-8 pt-[12vh]">
@@ -556,9 +562,13 @@ export function NewTab({
                 <>
                   Go to <span className="font-medium text-ink">{site}</span>
                 </>
-              ) : local ? (
+              ) : local && !egress ? (
                 <>
                   Web search is unavailable offline
+                </>
+              ) : local ? (
+                <>
+                  Search the web for <span className="font-medium text-ink">{typed}</span>
                 </>
               ) : (
                 <>

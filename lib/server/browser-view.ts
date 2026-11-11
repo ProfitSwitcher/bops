@@ -5,6 +5,8 @@ import { cloudOn, cloudUrl } from "./cloud";
 import { orgoKey } from "./orgo-auth";
 import { deviceIdFor } from "./persist-cloud";
 import { sharedProjectId } from "./shared";
+import { localOnly } from "@/lib/local/mode";
+import { STUDIO_SCREEN_LABEL, workerScreenPng } from "@/lib/local/mac-screen";
 import { stateUser } from "./store";
 
 /**
@@ -43,6 +45,7 @@ const MOVED = "The workspace changed. Open the bot's browser again.";
  * `quiet`: only what the bot is doing with it, which doesn't count as watching (a Watch chip's).
  */
 export async function watchBrowser(bot: string, project: string, signal: AbortSignal, quiet = false): Promise<Response> {
+  if (localOnly()) return localStudioScreen(signal);
   const who = asWhom();
   if (!who) return refused("Sign in with Orgo to see the bot's browser.", "signed_out");
   if (!sameWorkspace(who, project)) return refused(MOVED, "workspace_changed");
@@ -58,7 +61,34 @@ export async function watchBrowser(bot: string, project: string, signal: AbortSi
 }
 
 /** POST: take control, hand it back, or one input, as Bops Cloud answers it. `project`: as watchBrowser's. */
+/** Screenshots of this Mac, labeled as one shared screen. Not an Orgo browser and not a per-bot VNC display. */
+function localStudioScreen(signal: AbortSignal): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      };
+      send("page", { t: "page", url: "", title: STUDIO_SCREEN_LABEL, back: null });
+      send("activity", { t: "activity", step: "idle", waiting: false, signIn: false });
+      while (!signal.aborted) {
+        try {
+          const png = await workerScreenPng();
+          send("frame", { t: "frame", data: png.toString("base64"), meta: { w: 1280, h: 800, label: STUDIO_SCREEN_LABEL } });
+        } catch (e) {
+          send("refused", { t: "refused", why: `The ${STUDIO_SCREEN_LABEL} isn't available from the local worker: ${(e as Error).message}`, code: "local_screen" });
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+      controller.close();
+    },
+  });
+  return new Response(stream, { headers: SSE });
+}
+
 export async function actBrowser(act: Omit<BrowserAct, "project">, project: string): Promise<{ status: number; body: unknown }> {
+  if (localOnly()) return { status: 409, body: { error: `${STUDIO_SCREEN_LABEL} is a shared screenshot of this Mac. It is not a separate browser to control.` } };
   const who = asWhom();
   if (!who) return { status: 409, body: { error: "Sign in with Orgo first." } };
   if (!sameWorkspace(who, project)) return { status: 409, body: { error: MOVED, code: "workspace_changed" } };

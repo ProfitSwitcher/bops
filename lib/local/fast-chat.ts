@@ -5,13 +5,29 @@
 const TASKISH =
   /\b(screenshot|computer|email|e-mail|search|schedule|remind|browse|click|open|file|folder|code|skill|routine|watch|deploy|website|inbox|calendar|task|thread)\b/i;
 
+/** A command, a lookup, or a question about a current fact. These need tools, not the short chat. */
+const NEEDS_TOOLS =
+  /`[^`\n]+`|\b(run|running|command|commands|terminal|shell|bash|update|upgrade|install|search|weather|lookup|price|prices|latest|news)\b|\blook\s+up\b|\bhow\s+many\b|\bhow\s+much\b|\bwhat(?:'s| is| are)\s+the\b/i;
+
+export function needsLocalTools(text: string | undefined): boolean {
+  return NEEDS_TOOLS.test((text ?? "").trim());
+}
+
 export function isSimpleLocalChat(text: string | undefined, extras: { images?: boolean; files?: boolean; thread?: boolean } = {}): boolean {
   if (extras.images || extras.files || extras.thread) return false;
   const t = (text ?? "").trim();
   if (!t || t.length > 240) return false;
-  if (TASKISH.test(t) || localNeedsMemory(t)) return false;
+  if (TASKISH.test(t) || localNeedsMemory(t) || needsLocalTools(t)) return false;
   return true;
 }
+
+/** A short reply that offers to run or look something up. That reply is not sent; the full tool path runs instead. */
+export function promisesAction(reply: string): boolean {
+  return /\b(i(?:'|’)ll|i will|let me|i can|i(?:'|’)m going to)\b[\s\S]{0,80}\b(run|try|look|search|check|install|update|open|fetch|type)\b/i.test(reply) ||
+    /\b(let me try|i(?:'|’)ll run|running that|looking that up|let me look)\b/i.test(reply);
+}
+
+export const SIMPLE_CHAT_PROMPT = "Reply in one or two short sentences from what you already know. Do not offer to run a command, search the web, install anything, or look something up. If you cannot answer, say you don't know.";
 
 /** A local message needs a memory search only when it is about the person, not a task to go and do. */
 export function localNeedsMemory(said: string): boolean {
