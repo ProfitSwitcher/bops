@@ -110,7 +110,7 @@ export async function runComputerUseLoop(opts: {
         messages: [
           {
             role: "system",
-            content: `You control a computer from screenshots. The image is ${fitted.sentW} by ${fitted.sentH} pixels. Give coordinates in that image. Call computer with the next actions. type must be one of: ${ACTION_TYPES.join(", ")}. mouse_move is move, left_click is click. When the goal is finished, set done true in that same call, including the final action if one is still needed, and write the result the user asked for (what is on screen, which app is frontmost). Do not answer with only Done. Do not repeat an action that already ran.`,
+            content: `You control a computer from screenshots. The image is ${fitted.sentW} by ${fitted.sentH} pixels. Give coordinates in that image. Call computer with the next actions. type must be one of: ${ACTION_TYPES.join(", ")}. mouse_move is move, left_click is click. Do not open Terminal.app or click to type a shell command. Shell commands are run by the chat tool run_command, not by clicking. When the goal is finished, set done true in that same call, including the final action if one is still needed, and write the result the user asked for (what is on screen, which app is frontmost). Do not answer with only Done. Do not repeat an action that already ran.`,
           },
           {
             role: "user",

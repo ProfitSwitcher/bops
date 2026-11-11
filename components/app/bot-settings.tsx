@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { mailRule } from "@/lib/permission";
-import { aiLine, CLOUD_HONOURS_CALL_SETTINGS, headerLine, lineVoiceNote, repliesNote, SETTINGS_SECTIONS, SETTINGS_WORDS as W, spacedPhone, teamLine, type SettingsSection } from "@/lib/bot-settings";
+import { aiLine, cleanRole, CLOUD_HONOURS_CALL_SETTINGS, headerLine, lineVoiceNote, repliesNote, SETTINGS_SECTIONS, SETTINGS_WORDS as W, spacedPhone, teamLine, type SettingsSection } from "@/lib/bot-settings";
 import { onCount, todayOf } from "@/lib/sequences";
 import { ownMemory } from "@/lib/chain";
 import { appsStayLine, botChatId, CALL_VOICES, live, settingsOf, sharesComputer, workBot, workspaceOf, type AppState, type Bot, type BotSettings, type CallVoice, type Session } from "@/lib/types";
@@ -207,6 +207,7 @@ export function BotSettingsPage({
                   </>
                 )}
               </span>
+              <RoleEditor bot={b} />
               <div className="mt-3.5">
                 <ContactActions state={state} bot={b} plan={plan} onOpenChat={links.onOpenChat} size={44} />
               </div>
@@ -351,6 +352,39 @@ function ShareAndPause({ state, bot: b }: { state: AppState; bot: Bot }) {
         {running ? `Pause ${b.name} · ${running} running` : `${b.name} is idle`}
       </button>
     </div>
+  );
+}
+
+/** The role stored on the bot (state.json). Saved when the field loses focus. */
+function RoleEditor({ bot: b }: { bot: Bot }) {
+  const [role, setRole] = useState(b.role);
+  const [err, setErr] = useState("");
+  useEffect(() => setRole(b.role), [b.role]);
+  const save = async () => {
+    const next = cleanRole(role);
+    if (!next || next === b.role) {
+      setRole(b.role);
+      return;
+    }
+    const res = await post("/api/bots", { botId: b.id, role: next }, "PATCH").catch(() => null);
+    if (!res?.ok) setErr(res ? W.failed : W.offline);
+    else setErr("");
+  };
+  return (
+    <label className="mt-2 flex items-center gap-2 text-[13px] leading-5 text-[#3A3A38]" data-role-editor>
+      Role
+      <input
+        value={role}
+        aria-label="Role"
+        onChange={(e) => setRole(e.target.value)}
+        onBlur={() => void save()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+        }}
+        className="min-w-0 flex-1 rounded-lg bg-white px-2 py-1 text-[13px] shadow-[0_0_0_1px_#E2E2DF] outline-none"
+      />
+      {err && <span className="text-[12px] text-[#B42318]">{err}</span>}
+    </label>
   );
 }
 

@@ -7,15 +7,21 @@ import { currentWorkspaceId, setChainBot } from "@/lib/server/workspaces";
 import type { MemoryGroup } from "@/lib/types";
 import { notReady } from "@/lib/server/ready";
 
+const SHEET_MS = 12_000;
+
 /** A workspace's memory, for the Memory sheet; with ?bot=, a bot's Memory tab (?q= searches, ?mine=1 is what it learned). */
 export async function GET(request: Request) {
   const u = new URL(request.url).searchParams;
   const botId = u.get("bot");
   try {
-    if (botId) return Response.json(await memoryFor(botId, { q: u.get("q") ?? undefined, mine: u.get("mine") === "1" }));
-    return Response.json(await memoryInfo(u.get("ws") ?? currentWorkspaceId()));
+    const body = await Promise.race([
+      botId ? memoryFor(botId, { q: u.get("q") ?? undefined, mine: u.get("mine") === "1" }) : memoryInfo(u.get("ws") ?? currentWorkspaceId()),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Memory took too long. Try again.")), SHEET_MS)),
+    ]);
+    return Response.json(body);
   } catch (e) {
-    return Response.json({ error: (e as Error).message }, { status: 500 });
+    const message = (e as Error).message;
+    return Response.json({ error: message }, { status: message.startsWith("Memory took too long") ? 504 : 500 });
   }
 }
 

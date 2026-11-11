@@ -85,10 +85,13 @@ export function startWorker(opts = {}) {
         if (rest === "/bash") {
           if (kind === "fake") return send(res, 200, bashBody(0, "ok", ""));
           const command = String(body.command || "true");
+          const timeoutMs = Math.min(120_000, Math.max(1_000, Number(body.timeout_ms) || 30_000));
+          const cwd = typeof body.cwd === "string" && body.cwd.startsWith("/") && !body.cwd.includes("\0") ? body.cwd : undefined;
+          console.log(`[worker] bash ${cwd || "."} ${command.slice(0, 200)}`);
           const out =
             process.platform === "win32"
-              ? await run("powershell", ["-NoProfile", "-Command", command], { allowFail: true })
-              : await run("bash", ["-lc", command], { allowFail: true });
+              ? await run("powershell", ["-NoProfile", "-Command", command], { allowFail: true, timeoutMs, cwd })
+              : await run("bash", ["-lc", command], { allowFail: true, timeoutMs, cwd });
           return send(res, 200, bashBody(out.code, out.stdout, out.stderr));
         }
         if (kind === "fake") return send(res, 200, { ok: true, output: "", exit_code: 0 });
@@ -338,7 +341,7 @@ export function bashBody(code, stdout, stderr) {
 
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], ...(opts.cwd ? { cwd: opts.cwd } : {}) });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (c) => (stdout += c));

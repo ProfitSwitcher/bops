@@ -14,6 +14,7 @@ import type { SharedRole, SharedWorkspace } from "@/lib/shared";
 import { folderKey, moveWorkspaceFolder } from "./workspace-skills";
 import { isIdentityToken } from "./vm-identity";
 import { localComputersOn, localOrgoAnswered, localOrgoCall } from "@/lib/local/orgo-adapter";
+import { localOnly } from "@/lib/local/mode";
 
 /** Thin Orgo REST client (the published SDKs predate screens and clone). */
 
@@ -227,6 +228,8 @@ export async function callOrgo<T>(
     timeoutMs = 15_000,
   }: { method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE"; body?: unknown; raw?: { data: string | Uint8Array; type: string }; headers?: Record<string, string>; timeoutMs?: number } = {},
 ): Promise<{ status: number; json: T } | null> {
+  // Local-only mode never talks to Orgo. Without this, opening egress would send a placeholder "local" key.
+  if (localOnly()) return null;
   try {
     const type: Record<string, string> = raw ? { "Content-Type": raw.type } : body === undefined ? {} : { "Content-Type": "application/json" };
     const res = await fetch(`${orgoOrigin()}${path}`, {

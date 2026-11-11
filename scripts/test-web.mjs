@@ -231,7 +231,6 @@ await part("The address classifier", async () => {
     "0:0:0:0:0:0:0:1",
     "::ffff:127.0.0.1",
     "::ffff:7f00:1",
-    "::ffff:8.8.8.8",
     "::127.0.0.1",
     "fc00::1",
     "fd12:3456::1",
@@ -249,7 +248,7 @@ await part("The address classifier", async () => {
     "not an address",
     "",
   ];
-  const open = ["8.8.8.8", "1.1.1.1", "93.184.216.34", "100.63.255.255", "100.128.0.1", "172.15.255.255", "172.32.0.1", "192.169.0.1", "2606:4700:4700::1111", "[2a00:1450:4001::200e]", "64:ff9b::808:808", "64:ff9b::8.8.8.8"];
+  const open = ["8.8.8.8", "::ffff:8.8.8.8", "1.1.1.1", "93.184.216.34", "100.63.255.255", "100.128.0.1", "172.15.255.255", "172.32.0.1", "192.169.0.1", "2606:4700:4700::1111", "[2a00:1450:4001::200e]", "64:ff9b::808:808", "64:ff9b::8.8.8.8"];
   for (const a of blocked) await check(`${a || "(empty)"} is blocked`, () => assert.equal(isBlockedAddress(a), true));
   for (const a of open) await check(`${a} is public`, () => assert.equal(isBlockedAddress(a), false));
 });
@@ -350,7 +349,7 @@ await part("Lookups: every address checked, the connection pinned", async () => 
     await refused(() => safeFetch("https://mixed.test/"));
   });
   await check("an IPv4-mapped answer is refused", async () => {
-    dns.table.set("mapped.test", [{ address: "::ffff:8.8.8.8", family: 6 }]);
+    dns.table.set("mapped.test", [{ address: "::ffff:10.1.2.3", family: 6 }]);
     await refused(() => safeFetch("http://mapped.test/"));
   });
   await check("a name that isn't found says so", async () => {

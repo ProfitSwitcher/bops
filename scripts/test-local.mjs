@@ -38,7 +38,9 @@ const { localComputerTurn, screenResetPlan, workerAction, SCREEN_LOCKED } = awai
 const { solidPng, fitPng, scaleCoord } = await import("../lib/local/png-fit.ts");
 const { asThirdPerson, sameFact } = await import("../lib/local/memory-store.ts");
 const { scaleAction } = await import("../lib/local/computer-use.ts");
-const { isSimpleLocalChat, localNeedsMemory, stripImitatedDeeds, taskFromPromise } = await import("../lib/local/fast-chat.ts");
+const { isSimpleLocalChat, localNeedsMemory, promisesAction, stripImitatedDeeds, taskFromPromise } = await import("../lib/local/fast-chat.ts");
+const { commandNeedsApproval, botWorkspace, capOutput, shellQuote } = await import("../lib/local/shell.ts");
+const { STUDIO_SCREEN_LABEL } = await import("../lib/local/mac-screen.ts");
 const { transcribeLocal } = await import("../lib/local/speech.ts");
 const { deleteSession, listFacts } = await import("../lib/local/memory-store.ts");
 const { runResponses, resetResponsesForTests } = await import("../lib/local/responses.ts");
@@ -101,6 +103,8 @@ await check("the example config is the model plan", async () => {
   assert.equal(cfg.llm.roles.fast.chain.at(-1).model, "qwen3:4b");
   assert.equal(cfg.llm.roles.embed.chain[0].model, "qwen3-embedding:8b");
   assert.equal(cfg.llm.roles.heavy.chain[0].model, "mlx-community/Kimi-K2.7-Code-4bit");
+  const heavy = cfg.llm.roles.heavy.chain.map((s) => s.model);
+  assert.ok(heavy.indexOf("zai-org/GLM-5.3-Flash") > 0 && heavy.indexOf("zai-org/GLM-5.3-Flash") < heavy.indexOf("mlx-community/GLM-5.2-mxfp4"));
   assert.equal(cfg.llm.roles.heavy.chain.at(-1).model, "qwen3.5:122b");
   assert.equal(cfg.llm.endpoints.find((e) => e.id === "exo").provider, "exo");
 });
@@ -949,6 +953,136 @@ await check("local settings do not open an external account or billing page", as
     else process.env.BOPS_LOCAL_CONFIG = prev;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+await check("commands and fact questions are not a no-tools chat", async () => {
+  assert.equal(isSimpleLocalChat("hi"), true);
+  assert.equal(isSimpleLocalChat("pong"), true);
+  assert.equal(isSimpleLocalChat("I usually type `hermes update` in the terminal"), false);
+  assert.equal(isSimpleLocalChat("how many people are in montana state?"), false);
+  assert.equal(isSimpleLocalChat("what's the weather in missoula"), false);
+  assert.equal(isSimpleLocalChat("brew upgrade ffmpeg"), false);
+  assert.equal(promisesAction("I can run that for you. Let me try it."), true);
+  assert.equal(promisesAction("I'm here."), false);
+  assert.equal(commandNeedsApproval("ollama list"), null);
+  assert.equal(commandNeedsApproval("hermes update"), null);
+  assert.equal(commandNeedsApproval("brew upgrade ffmpeg"), null);
+  assert.equal(commandNeedsApproval("rm -rf ~/notes"), "deletes files recursively");
+  assert.equal(commandNeedsApproval("sudo reboot"), "uses sudo");
+  assert.equal(commandNeedsApproval("git push --force origin main"), "force-pushes");
+  assert.equal(commandNeedsApproval("echo hi > /etc/hosts"), "writes outside your home folder");
+  assert.equal(commandNeedsApproval("pkill -f bops"), "would stop Bops");
+  assert.match(botWorkspace("nova"), /bops\/\.data\/workspaces\/nova$/);
+  assert.match(shellQuote("/tmp/a b"), /'/);
+  assert.match(capOutput("x".repeat(20), 8), /truncated/);
+  assert.equal(STUDIO_SCREEN_LABEL, "Studio 3 screen");
+  const screens = (await import("../lib/local/orgo-adapter.ts")).localScreens();
+  assert.ok(screens.every((s) => s.label.includes("Studio 3 screen")));
+  assert.match(readFileSync("lib/server/browser-view.ts", "utf8"), /if \(localOnly\(\)\) return localStudioScreen/);
+  assert.match(readFileSync("app/api/screen/route.ts", "utf8"), /workerScreenPng/);
+  assert.match(readFileSync("lib/server/chat.ts", "utf8"), /run_command/);
+  const tabs = readFileSync("components/app/panel-tabs.tsx", "utf8");
+  assert.match(tabs, /local && !egress/);
+  assert.match(tabs, /Search the web for/);
+});
+
+await check("shared brain merges search and user-only facts stay", async () => {
+  const { factsToKeep, statesUserFact } = await import("../lib/local/memory-facts.ts");
+  const { searchSharedBrain, saveSharedBrain } = await import("../lib/local/shared-brain.ts");
+  const { isLocalAddress } = await import("../lib/local/egress.mjs");
+  const assistant = "I'll update the Hermes app for you and restart it after the download.";
+  assert.equal(statesUserFact(assistant), false);
+  assert.deepEqual(
+    factsToKeep(assistant, ["The user is updating the Hermes app.", "The user will restart Hermes after the download.", "The user downloaded a Hermes update."], "Alvis"),
+    [],
+  );
+  assert.deepEqual(factsToKeep("I prefer tea in the morning", ["Alvis prefers tea in the morning.", "Alvis prefers tea in the morning.", "Alvis is updating the Hermes app."], "Alvis"), ["Alvis prefers tea in the morning."]);
+  assert.equal(isLocalAddress("100.65.194.95"), true);
+  assert.equal(isLocalAddress("100.63.1.1"), false);
+  assert.equal(isLocalAddress("100.128.0.1"), false);
+  const seen = [];
+  const brain = await listen(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+    seen.push({ url: req.url, auth: req.headers.authorization, body });
+    if (req.url === "/api/search") return json(res, { results: [{ memory: { content: "The shop truck is blue." }, similarity_score: 0.9 }] });
+    if (req.url === "/api/memories") return json(res, { ok: true });
+    return json(res, { error: "no" }, 404);
+  });
+  process.env.BOPS_SHARED_BRAIN_URL = brain.url;
+  process.env.BOPS_SHARED_BRAIN_KEY = "tailnet-key";
+  process.env.BOPS_SHARED_BRAIN_MACHINE = "studio3";
+  try {
+    const hits = await searchSharedBrain("truck");
+    assert.deepEqual(hits, [{ content: "The shop truck is blue." }]);
+    assert.equal(await saveSharedBrain("Hermes update finished.", "nova"), true);
+    assert.deepEqual(await searchSharedBrain(""), []);
+    const down = await searchSharedBrain("truck", 3, async () => { throw new Error("down"); });
+    assert.deepEqual(down, []);
+  } finally {
+    delete process.env.BOPS_SHARED_BRAIN_URL;
+    delete process.env.BOPS_SHARED_BRAIN_KEY;
+    delete process.env.BOPS_SHARED_BRAIN_MACHINE;
+    brain.server.close();
+  }
+  assert.equal(seen[0].auth, "Bearer tailnet-key");
+  assert.equal(seen[1].body.tags.join(","), "bops,bot:nova,machine:studio3");
+  assert.match(readFileSync("lib/server/memory.ts", "utf8"), /statesUserFact/);
+  assert.match(readFileSync("lib/server/chat.ts", "utf8"), /save_shared_memory/);
+});
+
+await check("lan probes, machine name, chat tasks, and a role", async () => {
+  const { orderLocalAddresses } = await import("../lib/local/egress.mjs");
+  const { describeFetchError, checkEndpoint, clearHealth } = await import("../lib/local/endpoints.ts");
+  const { machineLabel } = await import("../lib/local/machine.ts");
+  const { needsScreen, commandOf } = await import("../lib/local/delegate.ts");
+  const ordered = orderLocalAddresses([
+    { address: "2606:4700:4700::1111", family: 6 },
+    { address: "fd7a:115c:a1e0::1", family: 6 },
+    { address: "192.168.1.20", family: 4 },
+  ]);
+  assert.equal(ordered[0].address, "192.168.1.20");
+  assert.equal(ordered.some((a) => a.address.startsWith("2606:")), false);
+  const err = new TypeError("fetch failed");
+  err.cause = { code: "ECONNREFUSED" };
+  assert.equal(describeFetchError(err), "fetch failed (ECONNREFUSED)");
+  clearHealth();
+  const health = await checkEndpoint({ id: "studio1", baseUrl: "http://studio1.local:11435/v1", provider: "ollama", apiKey: "k" }, async () => {
+    throw err;
+  });
+  assert.equal(health.ok, false);
+  assert.match(health.error, /ECONNREFUSED/);
+  assert.equal(machineLabel("studio3"), "Studio 3");
+  assert.equal(machineLabel("Studio 3"), "Studio 3");
+  assert.equal(needsScreen("click the login form in the browser"), true);
+  assert.equal(needsScreen("ask nova to run hermes update"), false);
+  assert.equal(commandOf("please run `hermes update`"), "hermes update");
+  assert.match(readFileSync("lib/bot-settings.ts", "utf8"), /export function cleanRole/);
+  assert.match(readFileSync("app/api/memory/route.ts", "utf8"), /Memory took too long/);
+  assert.match(readFileSync("app/api/bots/route.ts", "utf8"), /setBotRole/);
+  assert.match(readFileSync("components/app/bot-settings.tsx", "utf8"), /data-role-editor/);
+});
+
+await check("weather is answered live and search urls can be fetched", async () => {
+  const { weatherPlace, webSearch } = await import("../lib/local/web-search.ts");
+  const { urlsInSearch, webSearchCall } = await import("../lib/local/responses.ts");
+  assert.equal(weatherPlace("what's the weather in Missoula"), "Missoula");
+  assert.equal(weatherPlace("how many people live in Missoula"), null);
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    if (u.startsWith("https://wttr.in/")) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ current_condition: [{ temp_F: "37", temp_C: "3", humidity: "75", windspeedMiles: "5", weatherDesc: [{ value: "Cloudy" }] }], nearest_area: [{ areaName: [{ value: "Missoula" }], region: [{ value: "Montana" }], country: [{ value: "United States" }] }] }) };
+    }
+    return { ok: false, status: 503, text: async () => "" };
+  };
+  const text = await webSearch("what's the weather in Missoula", fetchImpl);
+  assert.match(text, /37°F/);
+  assert.match(text, /Missoula, Montana/);
+  assert.match(text, /https:\/\/wttr\.in\//);
+  const call = webSearchCall(urlsInSearch(text));
+  assert.equal(call.type, "web_search_call");
+  assert.ok(call.action.sources.some((s) => s.url.includes("wttr.in")));
 });
 
 await check("egress tripwire refuses public hosts and still allows loopback", async () => {

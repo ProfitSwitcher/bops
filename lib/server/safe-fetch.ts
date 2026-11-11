@@ -8,7 +8,7 @@ import { networkInterfaces } from "node:os";
 import type { Readable, Transform } from "node:stream";
 import zlib from "node:zlib";
 import { appVersion } from "./app-version";
-import { localOnly } from "@/lib/local/mode";
+import { allowEgress } from "@/lib/local/mode";
 
 /**
  * Fetching a public web page for a bot (web_fetch in chat, page monitors), safely. Bops runs on the
@@ -128,12 +128,29 @@ function words(v6: string): number[] {
   return [...h, ...Array<string>(fill).fill("0"), ...t].map((x) => parseInt(x, 16));
 }
 
+/** `::ffff:8.8.8.8` and `::ffff:7f00:1` are the IPv4 address inside, the form macOS sometimes returns beside the real one. */
+function unwrapV4Mapped(address: string): string {
+  const dotted = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(address);
+  if (dotted) return dotted[1];
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(address);
+  if (!hex) return address;
+  const hi = parseInt(hex[1], 16);
+  const lo = parseInt(hex[2], 16);
+  return `${(hi >> 8) & 255}.${hi & 255}.${(lo >> 8) & 255}.${lo & 255}`;
+}
+
+function hostIp(address: string): string {
+  return unwrapV4Mapped(address.replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, ""));
+}
+
 /**
  * Whether an IP address is one a page fetch must never reach (this Mac, a private or special
  * network). Takes "127.0.0.1", "::1" or "[::1]"; anything that isn't an IP address counts as blocked.
+ * An IPv4-mapped address is judged as the IPv4 inside it. A public address in that form is public,
+ * so one extra mapped answer does not make a public site look private.
  */
 export function isBlockedAddress(address: string): boolean {
-  const a = address.replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, "");
+  const a = hostIp(address);
   const kind = isIP(a);
   if (kind === 4) return V4.check(a, "ipv4");
   if (kind !== 6) return true;
@@ -171,7 +188,7 @@ function localNetworks(): BlockList {
 
 /** Whether an IP address is this Mac's own, or on a network it's on. */
 function onThisNetwork(address: string, nets = localNetworks()): boolean {
-  const a = address.replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, "");
+  const a = hostIp(address);
   const kind = isIP(a);
   return kind ? nets.check(a, kind === 6 ? "ipv6" : "ipv4") : false;
 }
@@ -240,7 +257,11 @@ function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
 async function addressesOf(u: URL, signal: AbortSignal): Promise<LookupAddress[]> {
   const host = bare(u.hostname);
   const family = isIP(host);
-  if (family) return [{ address: host, family }];
+  if (family) {
+    const address = hostIp(host);
+    const kind = isIP(address);
+    return [{ address, family: kind === 6 ? 6 : 4 }];
+  }
   let found: LookupAddress[];
   try {
     found = await untilAborted(lookup(host, { all: true }), signal);
@@ -250,8 +271,25 @@ async function addressesOf(u: URL, signal: AbortSignal): Promise<LookupAddress[]
   }
   if (!found.length) throw new Error(`Couldn't find a website called ${host}.`);
   const nets = localNetworks();
-  if (!allowedForTests(u) && found.some((a) => isBlockedAddress(a.address) || onThisNetwork(a.address, nets))) throw new FetchRefused(`${host} points to this Mac or a private network, so Bops won't open it.`);
-  return found;
+  const usable = usableAddresses(found);
+  if (!allowedForTests(u) && usable.some((a) => isBlockedAddress(a.address) || onThisNetwork(a.address, nets))) throw new FetchRefused(`${host} points to this Mac or a private network, so Bops won't open it.`);
+  return usable;
+}
+
+/** IPv4-mapped answers become the IPv4 inside them, and duplicates are dropped. */
+export function usableAddresses(found: LookupAddress[]): LookupAddress[] {
+  const out: LookupAddress[] = [];
+  const seen = new Set<string>();
+  for (const item of found) {
+    const address = hostIp(item.address);
+    const family = isIP(address);
+    if (family !== 4 && family !== 6) continue;
+    const key = `${family}:${address}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ address, family });
+  }
+  return out;
 }
 
 /**
@@ -390,7 +428,7 @@ function plain(e: unknown, u: URL, signal: AbortSignal): Error {
  * private address anywhere along the way, a file that isn't a page or a slow site throws.
  */
 export async function safeFetch(url: string, opts: { maxBytes?: number; timeoutMs?: number } = {}): Promise<Fetched> {
-  if (localOnly()) throw new FetchRefused("Opening public web pages is unavailable while Bops is in local-only mode.");
+  if (!allowEgress()) throw new FetchRefused("Opening public web pages is unavailable while Bops is in local-only mode.");
   const maxBytes = Math.max(1, opts.maxBytes ?? MAX_BYTES);
   const signal = AbortSignal.timeout(Math.max(1, opts.timeoutMs ?? TIMEOUT_MS));
   let u = checkUrl(url);

@@ -138,7 +138,8 @@ export function ComputerView({
   // The real screen or the Home screen, when you picked one (the button over an idle screen); else Bops picks.
   const [picked, setPicked] = useState<"real" | "home" | null>(null);
   // Browsers on this Mac: the viewer's own app's, never a shared workspace's (state.host is the viewer's).
-  const mac = !state.shared && state.host === "mac";
+  const local = useLocalOnly();
+  const mac = !state.shared && (state.host === "mac" || local);
   // The computer it works on: its own, or the main bot's when it shares. Its screens show every
   // bot's work there, since a screen another bot is using isn't free for this one either.
   const c = mac ? b : workBot(b, state.bots);
@@ -543,10 +544,11 @@ export function ComputerView({
             <span className="text-[13px] font-medium leading-4">Back to {b.name}</span>
           </button>
           <span className="text-[15px] font-semibold leading-5">
-            {c.name}&apos;s computer{sharers.length ? <span className="font-normal text-[#6B6B6B]"> · shared with {sharers.map((x) => x.name).join(", ")}</span> : null}
+            {local ? "Studio 3 screen" : `${c.name}'s computer`}
+            {local ? <span className="font-normal text-[#6B6B6B]"> · shared by the bots on this Mac</span> : sharers.length ? <span className="font-normal text-[#6B6B6B]"> · shared with {sharers.map((x) => x.name).join(", ")}</span> : null}
           </span>
           <span className="flex-1" />
-          <div className="flex gap-1">
+          {!local && <div className="flex gap-1">
             {DISPLAYS.map((d) => {
               const on = d === display;
               const busy = tasks.includes(d);
@@ -563,7 +565,7 @@ export function ComputerView({
                 </button>
               );
             })}
-          </div>
+          </div>}
           {readable && (
             <button
               onClick={() => setReaderFor(readerFor === viewKey ? null : viewKey)}

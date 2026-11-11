@@ -4,6 +4,7 @@
  */
 import { localOrgoCall } from "./orgo-adapter";
 import { loadConfig, localOnly } from "./mode";
+import { commandNeedsApproval, runLocalShell } from "./shell";
 import { ACTION_TYPES, runComputerUseLoop, type ComputerAction } from "./computer-use";
 
 type Worker = { id: string; url: string; token?: string };
@@ -137,6 +138,18 @@ export async function localComputerTurn(sessionId: string, goal: string, fetchIm
     act: async (actions) => {
       const notes: string[] = [];
       for (const action of actions) {
+        const kind = String(action.type || "").toLowerCase().replace(/[\s-]+/g, "_");
+        if (kind === "bash" || kind === "run_command" || kind === "command") {
+          const command = action.text || "";
+          const why = commandNeedsApproval(command);
+          if (why) notes.push(`Not run. It needs approval in the chat (${why}): ${command}`);
+          else {
+            const ran = await runLocalShell({ command, botId: sessionId, fetchImpl });
+            notes.push(`exit ${ran.exitCode}: ${ran.output.slice(0, 500)}`);
+          }
+          onStep?.({ ...action, type: "bash" });
+          continue;
+        }
         const req = workerAction(action);
         if (req && "error" in req) notes.push(req.error);
         else if (req) {

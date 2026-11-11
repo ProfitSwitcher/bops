@@ -6,6 +6,7 @@ import { lastWorkOf, live, pausedForOk, workspaceOf, MAIN_WORKSPACE, botChatId, 
 import { fileStore, onPostgres, onRunner, selfHosted, type Persistence, type StateAccess, type Went } from "./persist";
 import { cloudStore } from "./persist-cloud";
 import { pgStore } from "./persist-pg";
+import { localOnly } from "@/lib/local/mode";
 import { userBopsHome, userChromeDir, userDataDir } from "./user-paths";
 
 /**
@@ -109,6 +110,8 @@ function migrate(raw: Record<string, unknown>): AppState {
   // Each bot's procedures from before skills: moved into its workspace's skills when there's somewhere to keep them (workspace-skills.ts).
   state.procedures ??= [];
   state.host ??= "orgo";
+  // Local mode has no Orgo computers. One saved host of "orgo" would show cloud screens and the Orgo sign-in pane.
+  if (localOnly() && state.host === "orgo") state.host = "mac";
   state.owner ??= { name: "" };
   state.takeover = undefined;
   // Nor what said it to the user's other Bops (sessions.ts keepDriving).

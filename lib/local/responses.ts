@@ -1,12 +1,13 @@
 /**
  * The Responses API shape this app already speaks, answered by a local chat model.
- * Computer actions are handed back to the app. Web search is answered here: it is
- * unavailable offline, and the model is told that instead of calling a search API.
+ * Computer actions are handed back to the app. Web search is answered here: offline
+ * it reports that search is unavailable; when BOPS_ALLOW_EGRESS=1 it searches the web.
  */
 import { randomUUID } from "node:crypto";
 import { chat, looseToolCalls, type ChatMessage, type ToolDef } from "./provider";
-import { roleChain, type Role } from "./mode";
+import { allowEgress, roleChain, type Role } from "./mode";
 import { isCloudModel } from "./models";
+import { webSearch } from "./web-search";
 
 type Store = Map<string, ChatMessage[]>;
 const g = globalThis as unknown as { bopsLocalResponses?: Store };
@@ -99,7 +100,39 @@ export function stripJsonFence(text: string): string {
   return (fenced ? fenced[1] : text).trim();
 }
 
+/** URLs a local search result named, so a later web_fetch of one of them is an address the search wrote down. */
+export function urlsInSearch(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of text.matchAll(/https?:\/\/[^\s<>"')\]]+/g)) {
+    const url = m[0].replace(/[.,;]+$/, "");
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  return out.slice(0, 8);
+}
+
+export function webSearchCall(urls: string[]) {
+  const sources = urlsInSearch(urls.join("\n"));
+  if (!sources.length) return null;
+  return { type: "web_search_call" as const, status: "completed" as const, action: { sources: sources.map((url) => ({ url })) } };
+}
+
+async function webSearchResult(args: string | undefined, fetchImpl?: typeof fetch): Promise<string> {
+  if (!allowEgress()) return "Web search is unavailable offline. Say so, and answer from what you already know.";
+  let query = "";
+  try {
+    const parsed = JSON.parse(args || "{}") as { query?: unknown };
+    query = typeof parsed.query === "string" ? parsed.query : "";
+  } catch {
+    query = "";
+  }
+  return webSearch(query, fetchImpl ?? fetch);
+}
+
 function schemaOf(body: ResponseBody): Record<string, unknown> | undefined {
+
   const format = body.text?.format;
   if (!format) return undefined;
   if (format.type === "json_schema" && format.schema && typeof format.schema === "object") return format.schema;
@@ -114,17 +147,26 @@ export async function runResponses(body: ResponseBody, fetchImpl?: typeof fetch)
   const tools = toTools(body.tools ?? []);
   const jsonSchema = schemaOf(body);
   let result = await chat({ role, messages, tools, preferModel: prefer, jsonSchema, fetchImpl });
+  const found: string[] = [];
   let guard = 0;
-  while (guard++ < 2 && result.toolCalls.length && result.toolCalls.every((c) => c.name === "web_search")) {
+  while (guard++ < 3 && result.toolCalls.some((c) => c.name === "web_search")) {
+    const toolMessages = await Promise.all(
+      result.toolCalls.map(async (c) => {
+        if (c.name !== "web_search") return { role: "tool" as const, tool_call_id: c.id, content: "Search first. Call this again after the search results, using an address from them." };
+        const content = await webSearchResult(c.arguments, fetchImpl);
+        found.push(...urlsInSearch(content));
+        return { role: "tool" as const, tool_call_id: c.id, content };
+      }),
+    );
     messages = [
       ...messages,
       { role: "assistant", content: result.content || null, tool_calls: result.toolCalls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.arguments } })) },
-      ...result.toolCalls.map((c) => ({ role: "tool" as const, tool_call_id: c.id, content: "Web search is unavailable offline. Say so, and answer from what you already know." })),
+      ...toolMessages,
     ];
     result = await chat({ role, messages, tools, preferModel: result.model, jsonSchema, fetchImpl });
   }
   const id = `resp_${randomUUID()}`;
-  const output = toOutput(result);
+  const output = toOutput(result, found);
   const stored: ChatMessage[] = [
     ...messages,
     {
@@ -266,7 +308,9 @@ function toTools(tools: NonNullable<ResponseBody["tools"]>): ToolDef[] {
         type: "function",
         function: {
           name: "web_search",
-          description: "Look something up on the public web. Offline, this only reports that search is unavailable.",
+          description: allowEgress()
+            ? "Look something up on the public web. Returns titles, URLs, and short snippets. A weather question includes a live reading; answer from that instead of fetching a page."
+            : "Look something up on the public web. Offline, this only reports that search is unavailable.",
           parameters: { type: "object", properties: { query: { type: "string" } } },
         },
       });
@@ -277,8 +321,10 @@ function toTools(tools: NonNullable<ResponseBody["tools"]>): ToolDef[] {
   return out;
 }
 
-function toOutput(result: { content: string; toolCalls: { id: string; name: string; arguments: string }[] }) {
+function toOutput(result: { content: string; toolCalls: { id: string; name: string; arguments: string }[] }, sources: string[] = []) {
   const output: Record<string, unknown>[] = [];
+  const search = webSearchCall(sources);
+  if (search) output.push(search);
   if (result.content && !result.toolCalls.length) {
     output.push({
       id: `msg_${randomUUID()}`,

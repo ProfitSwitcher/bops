@@ -61,6 +61,7 @@ async function localDecide<K extends string>(state: Text, questions: Partial<Rec
   try {
     const result = await chat({
       role: "fast",
+      timeoutMs: 8_000,
       messages: [
         { role: "system", content: "Answer the questions as JSON. choice: {\"type\":\"choice\",\"choice\":\"...\",\"confidence\":0.8,\"probabilities\":{}}. noul: {\"type\":\"noul\",\"noul\":0.2}. No other text." },
         { role: "user", content: JSON.stringify({ state, questions }).slice(0, 8000) },
