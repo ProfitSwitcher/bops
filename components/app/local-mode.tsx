@@ -84,15 +84,18 @@ type RoleDraft = { mode: string; provider: string; model: string };
  * Whether this server is local-only. Starts on, so a slow config read cannot flash an Orgo
  * account page, and flips off only when the server says local-only is off.
  */
-/** Whether BOPS_ALLOW_EGRESS is on, so web search may leave this Mac. */
+/** Whether BOPS_ALLOW_EGRESS is on. Null until /api/config answers, so the New Tab does not say search is off before it knows. */
+let egressKnown: boolean | null = null;
 export function useAllowEgress() {
-  const [on, setOn] = useState(false);
+  const [on, setOn] = useState<boolean | null>(egressKnown);
   useEffect(() => {
     let stop = false;
     void fetch("/api/config")
       .then((r) => r.json())
       .then((body: { allowEgress?: boolean }) => {
-        if (!stop) setOn(!!body.allowEgress);
+        if (stop) return;
+        egressKnown = !!body.allowEgress;
+        setOn(egressKnown);
       })
       .catch(() => {});
     return () => {

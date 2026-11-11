@@ -3003,7 +3003,41 @@ export async function dropGuestKey(botId: string) {
     await orgo.bash(host.computerId, `rm -f /opt/bops/apps-${botId}.json`, 15).catch((e: Error) => console.warn(`[apps] key file for ${botId}: ${e.message}`));
 }
 
+/** A local task that is a command or a chat, not a screen. The computer loop is not started. */
+async function runLocalChatTask(sessionId: string) {
+  const s = session(sessionId);
+  const b = s && bot(s.botId);
+  if (!s || !b) return;
+  runs.add(sessionId);
+  const startedAt = Date.now();
+  patchSession(sessionId, { status: "running", activity: "working", startedAt: s.startedAt ?? startedAt });
+  try {
+    const { localChatTask } = await import("@/lib/local/delegate");
+    const answer = (await localChatTask(s.goal, s.botId)).trim() || "Done.";
+    if (stopped.has(sessionId)) return;
+    patchSession(sessionId, { status: "done", answer, endedAt: Date.now(), activity: undefined });
+    taskEnded(session(sessionId) ?? s, "done", startedAt);
+    addMessage({ chatId: s.chatId, role: "bot", botId: b.id, text: answer, sessionIds: [sessionId], resultOf: sessionId });
+  } catch (e) {
+    const error = (e as Error).message;
+    patchSession(sessionId, { status: "failed", error, endedAt: Date.now(), activity: undefined });
+    taskEnded(session(sessionId) ?? s, "failed", startedAt);
+    addMessage({ chatId: s.chatId, role: "bot", botId: b.id, text: `I couldn't finish ${s.title}: ${error}`, sessionIds: [sessionId], resultOf: sessionId, bops: true });
+  } finally {
+    runs.delete(sessionId);
+  }
+}
+
 async function run(sessionId: string) {
+  const queued = session(sessionId);
+  const queuedBot = queued && bot(queued.botId);
+  if (queued && queuedBot && localOnly() && !queued.agentSessionId && !queued.responseId && !(queued.steps?.length)) {
+    const { needsScreen } = await import("@/lib/local/delegate");
+    if (!needsScreen(queued.goal)) {
+      await runLocalChatTask(sessionId);
+      return;
+    }
+  }
   const startedAt = Date.now();
   const who = getState().account?.user.id;
   const s = session(sessionId)!;

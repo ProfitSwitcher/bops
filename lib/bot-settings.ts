@@ -135,6 +135,11 @@ export const spacedPhone = (n: string) => {
   return d.length === 11 && d.startsWith("1") ? `+1 (${d.slice(1, 4)}) ${d.slice(4, 7)} ${d.slice(7)}` : n;
 };
 
+/** A bot's role as saved: one line, at most 40 characters. Empty is not a role. */
+export function cleanRole(role: string): string {
+  return role.replace(/\s+/g, " ").trim().slice(0, 40);
+}
+
 /** Who and where it is on the chart, for the line under its name: works for or its role, who it reports to, its own memory. */
 export function headerLine(state: AppState, b: Bot): { text: string; ownMemory: boolean } {
   const t = teamIn(state, workspaceOf(b));

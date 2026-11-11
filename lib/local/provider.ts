@@ -2,7 +2,7 @@
  * OpenAI-compatible chat and embeddings against the configured local chain.
  * Talks to /v1 first, then the native Ollama routes older servers still use.
  */
-import { authHeaders, checkEndpoint, originOf, withRole, type Attempt } from "./endpoints";
+import { authHeaders, checkEndpoint, endpointFetch, originOf, withRole, type Attempt } from "./endpoints";
 import { beginExoWarmup, endExoWarmup, ensureExoInstance, exoLoadTimeoutMs } from "./exo";
 import { cloudPlan, noteLocalAnswer, redactSecrets, tryCloudChat } from "./cloud";
 import { assertLocalModel, CloudModelError, hasModel } from "./models";
@@ -30,8 +30,9 @@ export type ChatResult = {
 
 const CHAT_MS = 180_000;
 
-function chatTimeout(attempt: Attempt): number {
-  return attempt.endpoint.provider === "exo" ? exoLoadTimeoutMs() : CHAT_MS;
+function chatTimeout(attempt: Attempt, cap?: number): number {
+  const base = attempt.endpoint.provider === "exo" ? exoLoadTimeoutMs() : CHAT_MS;
+  return cap && cap > 0 ? Math.min(base, cap) : base;
 }
 
 /** How long Ollama keeps a model loaded. Planner and fast stay up so a chat does not reload a 74 GB model. */
@@ -49,6 +50,8 @@ export async function chat(opts: {
   preferModel?: string;
   jsonSchema?: Record<string, unknown>;
   fetchImpl?: typeof fetch;
+  /** Caps the wait. Judgment calls use this so a slow model cannot hold a page open. */
+  timeoutMs?: number;
 }): Promise<ChatResult> {
   if (opts.preferModel) assertLocalModel(opts.preferModel);
   const hasImage = JSON.stringify(opts.messages).includes("image_url");
@@ -64,7 +67,7 @@ export async function chat(opts: {
   try {
     const { value, attempt, skipped } = await withRole(
       opts.role,
-      async (attempt) => complete(attempt, opts.messages, opts.tools ?? [], hasImage, opts.fetchImpl, { jsonSchema: opts.jsonSchema, keepAlive: ollamaKeepAlive(opts.role) }),
+      async (attempt) => complete(attempt, opts.messages, opts.tools ?? [], hasImage, opts.fetchImpl, { jsonSchema: opts.jsonSchema, keepAlive: ollamaKeepAlive(opts.role), timeoutMs: opts.timeoutMs }),
       { preferModel: opts.preferModel, fetchImpl: opts.fetchImpl },
     );
     noteLocalAnswer();
@@ -81,7 +84,7 @@ export async function chat(opts: {
   }
 }
 
-async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], hasImage: boolean, fetchImpl: typeof fetch = fetch, extra: { jsonSchema?: Record<string, unknown>; keepAlive?: string } = {}): Promise<Omit<ChatResult, "model" | "endpoint">> {
+async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDef[], hasImage: boolean, fetchImpl: typeof fetch = fetch, extra: { jsonSchema?: Record<string, unknown>; keepAlive?: string; timeoutMs?: number } = {}): Promise<Omit<ChatResult, "model" | "endpoint">> {
   assertLocalModel(attempt.model);
   if (attempt.endpoint.provider === "exo") await assertExoReady(attempt, fetchImpl);
   const headers = { "Content-Type": "application/json", ...authHeaders(attempt.endpoint) };
@@ -94,7 +97,7 @@ async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDe
     const native = await nativeChat(attempt, messages, tools, headers, fetchImpl, extra.keepAlive, extra.jsonSchema);
     return fromOpenAI(native);
   }
-  const timeout = chatTimeout(attempt);
+  const timeout = chatTimeout(attempt, extra.timeoutMs);
   const exo = attempt.endpoint.provider === "exo";
   if (exo) beginExoWarmup(attempt.endpoint.id, attempt.model);
   let res: Response;
@@ -109,7 +112,7 @@ async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDe
         timeoutMs: timeout,
       });
     }
-    res = await fetchImpl(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) });
+    res = await endpointFetch(`${base}/chat/completions`, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(timeout) }, fetchImpl);
   } finally {
     if (exo) endExoWarmup(attempt.endpoint.id, attempt.model);
   }
@@ -121,12 +124,12 @@ async function complete(attempt: Attempt, messages: ChatMessage[], tools: ToolDe
     if (res.status === 404 || /not found|unknown model|does not exist/i.test(text)) throw new Error(text);
     if (hasImage && /image|vision|multimodal|image input/i.test(text)) throw new Error(text);
     if (tools.length && /tool|support|unimplemented|invalid/i.test(text)) {
-      const bare = await fetchImpl(`${base}/chat/completions`, {
+      const bare = await endpointFetch(`${base}/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify({ model: attempt.model, messages: withToolHint(messages, tools), temperature: 0.2 }),
         signal: AbortSignal.timeout(timeout),
-      });
+      }, fetchImpl);
       if (!bare.ok) throw new Error((await bare.text()).slice(0, 500));
       payload = await bare.json();
       const parsed = fromOpenAI(payload);
@@ -152,12 +155,12 @@ async function nativeChat(attempt: Attempt, messages: ChatMessage[], tools: Tool
   if (tools.length) body.tools = tools.map((t) => ({ type: "function", function: t.function }));
   if (extraKeep) body.keep_alive = extraKeep;
   if (extraFormat) body.format = extraFormat;
-  const res = await fetchImpl(`${origin}/api/chat`, {
+  const res = await endpointFetch(`${origin}/api/chat`, {
     method: "POST",
     headers,
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(CHAT_MS),
-  });
+  }, fetchImpl);
   if (!res.ok) throw new Error((await res.text()).slice(0, 500));
   const json = (await res.json()) as { message?: { content?: string; tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[] }; eval_count?: number; prompt_eval_count?: number };
   const calls = (json.message?.tool_calls ?? []).map((c, i) => ({
@@ -239,35 +242,35 @@ async function embedOn(attempt: Attempt, texts: string[], fetchImpl: typeof fetc
   const headers = { "Content-Type": "application/json", ...authHeaders(attempt.endpoint) };
   const base = attempt.endpoint.baseUrl.replace(/\/+$/, "");
   const origin = originOf(attempt.endpoint.baseUrl);
-  const openai = await fetchImpl(`${base}/embeddings`, {
+  const openai = await endpointFetch(`${base}/embeddings`, {
     method: "POST",
     headers,
     body: JSON.stringify({ model: attempt.model, input: texts }),
     signal: AbortSignal.timeout(60_000),
-  });
+  }, fetchImpl);
   if (openai.ok) {
     const json = (await openai.json()) as { data?: { embedding?: number[]; index?: number }[] };
     const rows = (json.data ?? []).slice().sort((a, b) => (a.index ?? 0) - (b.index ?? 0));
     if (rows.length === texts.length && rows.every((r) => Array.isArray(r.embedding))) return rows.map((r) => r.embedding as number[]);
   }
-  const batch = await fetchImpl(`${origin}/api/embed`, {
+  const batch = await endpointFetch(`${origin}/api/embed`, {
     method: "POST",
     headers,
     body: JSON.stringify({ model: attempt.model, input: texts }),
     signal: AbortSignal.timeout(60_000),
-  });
+  }, fetchImpl);
   if (batch.ok) {
     const json = (await batch.json()) as { embeddings?: number[][] };
     if (Array.isArray(json.embeddings) && json.embeddings.length === texts.length) return json.embeddings;
   }
   const out: number[][] = [];
   for (const prompt of texts) {
-    const one = await fetchImpl(`${origin}/api/embeddings`, {
+    const one = await endpointFetch(`${origin}/api/embeddings`, {
       method: "POST",
       headers,
       body: JSON.stringify({ model: attempt.model, prompt }),
       signal: AbortSignal.timeout(60_000),
-    });
+    }, fetchImpl);
     if (!one.ok) throw new Error((await one.text()).slice(0, 300));
     const json = (await one.json()) as { embedding?: number[] };
     if (!Array.isArray(json.embedding)) throw new Error(`${attempt.model} returned no embedding`);

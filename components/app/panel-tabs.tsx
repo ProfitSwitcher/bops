@@ -389,7 +389,7 @@ export function WebTab({ url, hidden, user, onPage, botBrowser }: { url: string;
   const egress = useAllowEgress();
   const go = (typed: string) => {
     if (!typed.trim()) return;
-    const next = toAddress(typed, local, egress);
+    const next = toAddress(typed, local, egress !== false);
     if (!next) return;
     setTyping(null);
     setAt(next);
@@ -509,13 +509,14 @@ export function NewTab({
   const [address, setAddress] = useState("");
   const local = useLocalOnly();
   const egress = useAllowEgress();
+  const searchOn = egress !== false;
   const go = () => {
-    const next = toAddress(address, local, egress);
+    const next = toAddress(address, local, searchOn);
     if (next) onWeb(next);
   };
   const typed = address.trim();
   // The site it'll open, when what's typed is an address rather than a search.
-  const target = typed ? toAddress(typed, local, egress) : "";
+  const target = typed ? toAddress(typed, local, searchOn) : "";
   const site = target && !target.startsWith("https://www.google.com/search?") ? hostOf(target).replace(/^www\./, "") : null;
   return (
     <div className="motion-fade-in flex min-h-0 flex-1 flex-col items-center gap-6 overflow-y-auto px-8 pt-[12vh]">
@@ -562,7 +563,7 @@ export function NewTab({
                 <>
                   Go to <span className="font-medium text-ink">{site}</span>
                 </>
-              ) : local && !egress ? (
+              ) : local && egress === false ? (
                 <>
                   Web search is unavailable offline
                 </>

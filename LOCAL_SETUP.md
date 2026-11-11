@@ -22,7 +22,7 @@ Edit `bops.local.json`. Empty `apiKey` is allowed only for loopback. Every other
 | Role | First choice | Then |
 |---|---|---|
 | Planner | `ornith-1.5:122b` on Studio 3 | `qwen3.8-flash-next:125b-mlx` on Studio 1, then `qwen3.5:122b` |
-| Heavy (hard planning and coding) | exo on the Studio cluster, first `mlx-community/Kimi-K2.7-Code-4bit` | the other downloaded exo ids in `bops.local.example.json`, then the Ollama planner |
+| Heavy (hard planning and coding) | exo on the Studio cluster, first `mlx-community/Kimi-K2.7-Code-4bit` | then `zai-org/GLM-5.3-Flash` (ahead of `mlx-community/GLM-5.2-mxfp4`), then the other downloaded exo ids, then the Ollama planner |
 | Vision / computer use | `qwen3.8:27b-q8_0` on Studio 3 | the same tag on Studio 1, then `qwen3.8:latest` (q4_K_M) on Geforce5, then `qwen3.5:122b` |
 | Fast / router | `nemotron-3.5-lightning:30b` on Studio 3 | the same tag on Studio 1, then `qwen3:30b`, then `qwen3:4b` on Geforce5 |
 | Embeddings | `qwen3-embedding:8b` on Studio 3 | the same tag on Studio 1, then Geforce5 |
@@ -39,7 +39,15 @@ export HF_HUB_OFFLINE=1
 
 The cluster is one exo over Thunderbolt RDMA. Either studio's API on port 52415 sees the same models. The example points the app at `http://127.0.0.1:52415/v1` because Studio 3 runs the app. Change `exo.baseUrl` if the app runs somewhere else, and put the token-checking proxy in front if that address is not loopback.
 
-A model is eligible when at least one node has finished downloading it and no node is still downloading it or has failed. exo can place that copy on the machine that holds the weights, so Kimi and Qwen3-Coder count when they are complete on Studio 1 only. The ids in the example are the ones `/state` reports: `mlx-community/Kimi-K2.7-Code-4bit`, `mlx-community/Qwen3-Coder-480B-A35B-Instruct-8bit`, `mlx-community/GLM-5.2-mxfp4`, and `MiniMaxAI/MiniMax-M2.7`. Add others from `/state` the same way. `BOPS_LLM_HEAVY_MODEL` prepends one id without editing the file.
+A model is eligible when at least one node has finished downloading it and no node is still downloading it or has failed. exo can place that copy on the machine that holds the weights, so Kimi and Qwen3-Coder count when they are complete on Studio 1 only. The ids in the example are the ones `/state` reports: `mlx-community/Kimi-K2.7-Code-4bit`, `mlx-community/Qwen3-Coder-480B-A35B-Instruct-8bit`, `zai-org/GLM-5.3-Flash` (exo-next, `model_type` glm5_next, DownloadCompleted on both Studios), `mlx-community/GLM-5.2-mxfp4`, and `MiniMaxAI/MiniMax-M2.7`. `bops.local.json` on Studio 3 is yours: the app does not rewrite it. Add this step to `llm.roles.heavy.chain`, after Kimi and before `mlx-community/GLM-5.2-mxfp4`:
+
+```json
+{ "endpoint": "exo", "model": "zai-org/GLM-5.3-Flash" }
+```
+
+`BOPS_LLM_HEAVY_MODEL` prepends one id without editing the file. `BOPS_MACHINE_NAME` is the name bots use for this computer (default: the hostname, so `studio3` is said as Studio 3).
+
+LAN probes of Studio 1 and Geforce5 prefer IPv4 and wait up to 8 seconds. A `.local` name often has a slow or unusable IPv6 address; curl can still succeed on IPv4 while a 1 second Node probe reports `fetch failed`. The cause is now included in the `/api/local` skip line.
 
 Chat on exo needs a running instance. If `/state` has none for the chosen model, the app reads `GET /instance/previews` and `POST`s `/place_instance` only for a preview whose nodes already have that model `DownloadCompleted`. Tensor across both Studios is used when both already have it. A copy that exists only on Studio 1 is placed with pipeline on that node, even if the other node still has a leftover `DownloadPending`. A placement that would include a node without the weights is not sent, so exo is not asked to download. It then polls `/state` until that instance's runners are `RunnerReady`, within `BOPS_EXO_LOAD_TIMEOUT_MS`. A runner in `RunnerFailed` stops the wait immediately. If the instance this attempt created fails or never becomes ready, that instance is deleted. exo 0.3.70 then cancels every in-progress download a running model is not using, so the app snapshots those from `/state` and `POST`s `/download/start` with the same shard for each one, then checks they are in progress again. An instance that was already running is left in place. After two such failures in a row, exo is skipped for 30 minutes (`BOPS_EXO_FAIL_LIMIT`, `BOPS_EXO_COOLDOWN_MS`) and heavy continues with the next model. An instance that is already running for that model is reused. A different large instance is not stopped when the new one will not fit. Set `"exo": {"allowEvict": true}` or `BOPS_EXO_ALLOW_EVICT=1` to allow that. Otherwise heavy continues to the next model, then the Ollama planner.
 

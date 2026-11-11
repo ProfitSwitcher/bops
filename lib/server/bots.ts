@@ -1,4 +1,5 @@
 import "server-only";
+import { cleanRole } from "@/lib/bot-settings";
 import { botChatId, isScreenWatch, live, sharesComputer, workspaceOf, type Bot } from "@/lib/types";
 import { bot, getState, update } from "./store";
 import { botsNamedInDeleted } from "./deleted";
@@ -94,6 +95,17 @@ export function renameBot(botId: string, name: string): { ok: true } | { error: 
   void import("./channels").then(({ renameInChannels }) => renameInChannels(botId)).catch((e: Error) => console.warn(`[rename] ${botId} channels: ${e.message}`));
   // Just the name on the desktop: Chrome keeps running.
   if (b.computerId) void import("./desktop").then(({ applyDesktop }) => applyDesktop(b, { restartChrome: false })).catch((e: Error) => console.warn(`[rename] ${botId} desktop: ${e.message}`));
+  return { ok: true };
+}
+
+/** Change the one or two word role shown under the bot's name. */
+export function setBotRole(botId: string, role: string): { ok: true } | { error: string } {
+  const b = bot(botId);
+  const clean = cleanRole(role);
+  if (!b) return { error: "no such bot" };
+  if (!clean) return { error: "role required" };
+  if (clean === b.role) return { ok: true };
+  update(() => (b.role = clean));
   return { ok: true };
 }
 

@@ -3,6 +3,8 @@
  * A step is skipped when the machine is down, the tag is `:cloud`, or that Ollama
  * doesn't have the model. The next configured local model is tried. No cloud fallback.
  */
+import net from "node:net";
+import { Agent, type Dispatcher } from "undici";
 import { assertLocalHost, isLocalAddress } from "./egress.mjs";
 import { modelsFromExoState } from "./exo";
 import { assertLocalModel, CloudModelError, hasModel, isCloudModel, modelsFromTagsPayload, type ListedModel } from "./models";
@@ -19,7 +21,49 @@ export type Health = {
 
 const cache = new Map<string, { at: number; health: Health }>();
 const TTL_MS = 15_000;
-const PROBE_MS = 1_200;
+const LOOPBACK_PROBE_MS = 2_500;
+/** mDNS and a cold LAN /api/tags are slower than a loopback answer. 1.2s aborted them as "fetch failed". */
+const LAN_PROBE_MS = 8_000;
+
+let ipv4Agent: Agent | undefined;
+
+function ipv4Dispatcher(): Dispatcher {
+  ipv4Agent ??= new Agent({ connect: { family: 4, autoSelectFamily: false } });
+  return ipv4Agent;
+}
+
+/** Why a fetch failed, including the cause Node hides behind "fetch failed". */
+export function describeFetchError(e: unknown): string {
+  const err = e as { message?: string; cause?: { message?: string; code?: string } };
+  const msg = err.message || "no answer";
+  const cause = err.cause?.code || err.cause?.message;
+  return cause && !msg.includes(String(cause)) ? `${msg} (${cause})` : msg;
+}
+
+function timedOut(e: unknown): boolean {
+  const name = (e as { name?: string }).name ?? "";
+  return name === "TimeoutError" || name === "AbortError";
+}
+
+/**
+ * Fetch a LAN or loopback model server. Prefer IPv4 so a broken AAAA (link-local, or a public
+ * address the guard then refuses) does not hide a working IPv4 Ollama.
+ */
+export async function endpointFetch(url: string, init: RequestInit = {}, fetchImpl: typeof fetch = fetch): Promise<Response> {
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return fetchImpl(url, init);
+  }
+  if (net.isIP(host) === 6) return fetchImpl(url, init);
+  try {
+    return await fetchImpl(url, { ...init, dispatcher: ipv4Dispatcher() } as RequestInit);
+  } catch (e) {
+    if (timedOut(e) || net.isIP(host) === 4) throw e;
+    return fetchImpl(url, init);
+  }
+}
 
 export function clearHealth() {
   cache.clear();
@@ -82,7 +126,7 @@ async function probe(ep: LlmEndpoint, fetchImpl: typeof fetch): Promise<Health> 
   let last = "no answer";
   for (const url of urls) {
     try {
-      const res = await fetchImpl(url, { headers, signal: AbortSignal.timeout(PROBE_MS) });
+      const res = await endpointFetch(url, { headers, signal: AbortSignal.timeout(probeMs(ep.baseUrl)) }, fetchImpl);
       if (!res.ok) {
         last = `${res.status} from ${url}`;
         continue;
@@ -95,7 +139,7 @@ async function probe(ep: LlmEndpoint, fetchImpl: typeof fetch): Promise<Health> 
       const models = modelsFromTagsPayload(body).filter((m) => !m.cloud);
       return { ok: true, models: models.length ? models : null };
     } catch (e) {
-      last = (e as Error).message;
+      last = describeFetchError(e);
     }
   }
   return { ok: false, error: last, models: null };
@@ -105,7 +149,7 @@ async function probe(ep: LlmEndpoint, fetchImpl: typeof fetch): Promise<Health> 
 async function probeExo(ep: LlmEndpoint, fetchImpl: typeof fetch): Promise<Health> {
   const headers = authHeaders(ep);
   try {
-    const res = await fetchImpl(`${originOf(ep.baseUrl)}/state`, { headers, signal: AbortSignal.timeout(PROBE_MS) });
+    const res = await endpointFetch(`${originOf(ep.baseUrl)}/state`, { headers, signal: AbortSignal.timeout(probeMs(ep.baseUrl)) }, fetchImpl);
     if (!res.ok) return { ok: false, error: `${res.status} from /state`, models: null };
     const { downloaded, downloading } = modelsFromExoState(await res.json().catch(() => null));
     return {
@@ -114,7 +158,15 @@ async function probeExo(ep: LlmEndpoint, fetchImpl: typeof fetch): Promise<Healt
       partial: downloading,
     };
   } catch (e) {
-    return { ok: false, error: (e as Error).message, models: null };
+    return { ok: false, error: describeFetchError(e), models: null };
+  }
+}
+
+function probeMs(baseUrl: string): number {
+  try {
+    return loopback(new URL(baseUrl).hostname) ? LOOPBACK_PROBE_MS : LAN_PROBE_MS;
+  } catch {
+    return LAN_PROBE_MS;
   }
 }
 

@@ -81,6 +81,7 @@ export async function routinePick(botId: string, goal: string): Promise<"mac" | 
 async function whereFor(botId: string, goal: string, asked: "mac" | "cloud" | "auto", opts: { outside?: boolean }): Promise<Where | null> {
   // A computer's runner is on the bot's computer, with no Mac and nobody to ask: it runs only what needs no Mac (runner.ts pinnedToMac).
   if (onRunner()) return "cloud";
+  if ((await import("@/lib/local/mode")).localOnly()) return MAC_WORDS.test(goal) && getState().mac?.ready ? "mac" : "cloud";
   const state = getState();
   const mac = state.mac;
   // Full access is kept on this Mac, not in the state (full-access.ts).

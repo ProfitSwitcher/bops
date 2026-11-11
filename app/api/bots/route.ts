@@ -1,4 +1,4 @@
-import { createBot, renameBot, setComputer } from "@/lib/server/bots";
+import { createBot, renameBot, setBotRole, setComputer } from "@/lib/server/bots";
 import { relayChange } from "@/lib/server/change-relay";
 import { deleteBot } from "@/lib/server/remove";
 import { requestInbox } from "@/lib/server/mail";
@@ -58,6 +58,8 @@ export async function PATCH(request: Request) {
     dataOff?: boolean;
     /** A new name: its email address, phone agents and desktop follow. */
     name?: string;
+    /** The role under its name (one or two words). */
+    role?: string;
     /** Work on the main bot's computer, or its own (see setComputer). */
     computer?: "shared" | "own";
     /** Get this bot an email (Max: up to 5; see requestInbox). */
@@ -105,6 +107,10 @@ export async function PATCH(request: Request) {
   }
   if (body.name !== undefined) {
     const r = renameBot(b.id, body.name);
+    if ("error" in r) return Response.json(r, { status: 400 });
+  }
+  if (typeof body.role === "string") {
+    const r = setBotRole(b.id, body.role);
     if ("error" in r) return Response.json(r, { status: 400 });
   }
   const runsOnBefore = b.runsOn;

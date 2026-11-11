@@ -260,6 +260,7 @@ const PRIVATE_Q = (line: string): Question => ({
 
 /** The lines that are safe to put in a prompt. If Jev can't answer, only the patterns decide (and nothing is cached). */
 async function shareable(lines: string[]) {
+  if (localOnly()) return lines.filter((l) => !isPrivate(l));
   const unsure = [...new Set(lines.filter((l) => !isPrivate(l) && !live.privacy.has(l)))].slice(0, 80);
   if (unsure.length) {
     const a = await decide({ about: `${ownerName()}'s long-term memory` }, Object.fromEntries(unsure.map((l, i) => [`l${i}`, PRIVATE_Q(l)])));
@@ -940,6 +941,7 @@ function sourceOf(sessionId: string | null) {
 /** Facts worth showing: Jev drops what looks learned wrong (each fact asked once). If Jev can't answer, all stay. */
 const good = new Map<string, boolean>();
 async function worthShowing<T extends { text: string }>(facts: T[]) {
+  if (localOnly()) return facts;
   const unsure = [...new Set(facts.map((f) => f.text).filter((t) => !good.has(t)))];
   await inBatches(unsure, 40, async (batch) => {
     const a = await decide(STATE(), Object.fromEntries(batch.map((t, i) => [`f${i}`, FACT_KIND(t)])));

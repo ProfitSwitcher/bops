@@ -70,6 +70,7 @@
         "chain": [
           { "endpoint": "exo", "model": "mlx-community/Kimi-K2.7-Code-4bit" },
           { "endpoint": "exo", "model": "mlx-community/Qwen3-Coder-480B-A35B-Instruct-8bit" },
+          { "endpoint": "exo", "model": "zai-org/GLM-5.3-Flash" },
           { "endpoint": "exo", "model": "mlx-community/GLM-5.2-mxfp4" },
           { "endpoint": "exo", "model": "MiniMaxAI/MiniMax-M2.7" },
           { "endpoint": "studio3", "model": "ornith-1.5:122b" },

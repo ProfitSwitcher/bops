@@ -103,6 +103,8 @@ await check("the example config is the model plan", async () => {
   assert.equal(cfg.llm.roles.fast.chain.at(-1).model, "qwen3:4b");
   assert.equal(cfg.llm.roles.embed.chain[0].model, "qwen3-embedding:8b");
   assert.equal(cfg.llm.roles.heavy.chain[0].model, "mlx-community/Kimi-K2.7-Code-4bit");
+  const heavy = cfg.llm.roles.heavy.chain.map((s) => s.model);
+  assert.ok(heavy.indexOf("zai-org/GLM-5.3-Flash") > 0 && heavy.indexOf("zai-org/GLM-5.3-Flash") < heavy.indexOf("mlx-community/GLM-5.2-mxfp4"));
   assert.equal(cfg.llm.roles.heavy.chain.at(-1).model, "qwen3.5:122b");
   assert.equal(cfg.llm.endpoints.find((e) => e.id === "exo").provider, "exo");
 });
@@ -1028,6 +1030,38 @@ await check("shared brain merges search and user-only facts stay", async () => {
   assert.equal(seen[1].body.tags.join(","), "bops,bot:nova,machine:studio3");
   assert.match(readFileSync("lib/server/memory.ts", "utf8"), /statesUserFact/);
   assert.match(readFileSync("lib/server/chat.ts", "utf8"), /save_shared_memory/);
+});
+
+await check("lan probes, machine name, chat tasks, and a role", async () => {
+  const { orderLocalAddresses } = await import("../lib/local/egress.mjs");
+  const { describeFetchError, checkEndpoint, clearHealth } = await import("../lib/local/endpoints.ts");
+  const { machineLabel } = await import("../lib/local/machine.ts");
+  const { needsScreen, commandOf } = await import("../lib/local/delegate.ts");
+  const ordered = orderLocalAddresses([
+    { address: "2606:4700:4700::1111", family: 6 },
+    { address: "fd7a:115c:a1e0::1", family: 6 },
+    { address: "192.168.1.20", family: 4 },
+  ]);
+  assert.equal(ordered[0].address, "192.168.1.20");
+  assert.equal(ordered.some((a) => a.address.startsWith("2606:")), false);
+  const err = new TypeError("fetch failed");
+  err.cause = { code: "ECONNREFUSED" };
+  assert.equal(describeFetchError(err), "fetch failed (ECONNREFUSED)");
+  clearHealth();
+  const health = await checkEndpoint({ id: "studio1", baseUrl: "http://studio1.local:11435/v1", provider: "ollama", apiKey: "k" }, async () => {
+    throw err;
+  });
+  assert.equal(health.ok, false);
+  assert.match(health.error, /ECONNREFUSED/);
+  assert.equal(machineLabel("studio3"), "Studio 3");
+  assert.equal(machineLabel("Studio 3"), "Studio 3");
+  assert.equal(needsScreen("click the login form in the browser"), true);
+  assert.equal(needsScreen("ask nova to run hermes update"), false);
+  assert.equal(commandOf("please run `hermes update`"), "hermes update");
+  assert.match(readFileSync("lib/bot-settings.ts", "utf8"), /export function cleanRole/);
+  assert.match(readFileSync("app/api/memory/route.ts", "utf8"), /Memory took too long/);
+  assert.match(readFileSync("app/api/bots/route.ts", "utf8"), /setBotRole/);
+  assert.match(readFileSync("components/app/bot-settings.tsx", "utf8"), /data-role-editor/);
 });
 
 await check("egress tripwire refuses public hosts and still allows loopback", async () => {
