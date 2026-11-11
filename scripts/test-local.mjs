@@ -1064,6 +1064,27 @@ await check("lan probes, machine name, chat tasks, and a role", async () => {
   assert.match(readFileSync("components/app/bot-settings.tsx", "utf8"), /data-role-editor/);
 });
 
+await check("weather is answered live and search urls can be fetched", async () => {
+  const { weatherPlace, webSearch } = await import("../lib/local/web-search.ts");
+  const { urlsInSearch, webSearchCall } = await import("../lib/local/responses.ts");
+  assert.equal(weatherPlace("what's the weather in Missoula"), "Missoula");
+  assert.equal(weatherPlace("how many people live in Missoula"), null);
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    if (u.startsWith("https://wttr.in/")) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ current_condition: [{ temp_F: "37", temp_C: "3", humidity: "75", windspeedMiles: "5", weatherDesc: [{ value: "Cloudy" }] }], nearest_area: [{ areaName: [{ value: "Missoula" }], region: [{ value: "Montana" }], country: [{ value: "United States" }] }] }) };
+    }
+    return { ok: false, status: 503, text: async () => "" };
+  };
+  const text = await webSearch("what's the weather in Missoula", fetchImpl);
+  assert.match(text, /37°F/);
+  assert.match(text, /Missoula, Montana/);
+  assert.match(text, /https:\/\/wttr\.in\//);
+  const call = webSearchCall(urlsInSearch(text));
+  assert.equal(call.type, "web_search_call");
+  assert.ok(call.action.sources.some((s) => s.url.includes("wttr.in")));
+});
+
 await check("egress tripwire refuses public hosts and still allows loopback", async () => {
   installEgressGuard();
   await assert.rejects(fetch("https://api.openai.com/v1/models"), LocalOnlyError);

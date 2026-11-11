@@ -100,6 +100,25 @@ export function stripJsonFence(text: string): string {
   return (fenced ? fenced[1] : text).trim();
 }
 
+/** URLs a local search result named, so a later web_fetch of one of them is an address the search wrote down. */
+export function urlsInSearch(text: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const m of text.matchAll(/https?:\/\/[^\s<>"')\]]+/g)) {
+    const url = m[0].replace(/[.,;]+$/, "");
+    if (seen.has(url)) continue;
+    seen.add(url);
+    out.push(url);
+  }
+  return out.slice(0, 8);
+}
+
+export function webSearchCall(urls: string[]) {
+  const sources = urlsInSearch(urls.join("\n"));
+  if (!sources.length) return null;
+  return { type: "web_search_call" as const, status: "completed" as const, action: { sources: sources.map((url) => ({ url })) } };
+}
+
 async function webSearchResult(args: string | undefined, fetchImpl?: typeof fetch): Promise<string> {
   if (!allowEgress()) return "Web search is unavailable offline. Say so, and answer from what you already know.";
   let query = "";
@@ -128,14 +147,16 @@ export async function runResponses(body: ResponseBody, fetchImpl?: typeof fetch)
   const tools = toTools(body.tools ?? []);
   const jsonSchema = schemaOf(body);
   let result = await chat({ role, messages, tools, preferModel: prefer, jsonSchema, fetchImpl });
+  const found: string[] = [];
   let guard = 0;
-  while (guard++ < 2 && result.toolCalls.length && result.toolCalls.every((c) => c.name === "web_search")) {
+  while (guard++ < 3 && result.toolCalls.some((c) => c.name === "web_search")) {
     const toolMessages = await Promise.all(
-      result.toolCalls.map(async (c) => ({
-        role: "tool" as const,
-        tool_call_id: c.id,
-        content: await webSearchResult(c.arguments, fetchImpl),
-      })),
+      result.toolCalls.map(async (c) => {
+        if (c.name !== "web_search") return { role: "tool" as const, tool_call_id: c.id, content: "Search first. Call this again after the search results, using an address from them." };
+        const content = await webSearchResult(c.arguments, fetchImpl);
+        found.push(...urlsInSearch(content));
+        return { role: "tool" as const, tool_call_id: c.id, content };
+      }),
     );
     messages = [
       ...messages,
@@ -145,7 +166,7 @@ export async function runResponses(body: ResponseBody, fetchImpl?: typeof fetch)
     result = await chat({ role, messages, tools, preferModel: result.model, jsonSchema, fetchImpl });
   }
   const id = `resp_${randomUUID()}`;
-  const output = toOutput(result);
+  const output = toOutput(result, found);
   const stored: ChatMessage[] = [
     ...messages,
     {
@@ -288,7 +309,7 @@ function toTools(tools: NonNullable<ResponseBody["tools"]>): ToolDef[] {
         function: {
           name: "web_search",
           description: allowEgress()
-            ? "Look something up on the public web. Returns titles, URLs, and short snippets."
+            ? "Look something up on the public web. Returns titles, URLs, and short snippets. A weather question includes a live reading; answer from that instead of fetching a page."
             : "Look something up on the public web. Offline, this only reports that search is unavailable.",
           parameters: { type: "object", properties: { query: { type: "string" } } },
         },
@@ -300,8 +321,10 @@ function toTools(tools: NonNullable<ResponseBody["tools"]>): ToolDef[] {
   return out;
 }
 
-function toOutput(result: { content: string; toolCalls: { id: string; name: string; arguments: string }[] }) {
+function toOutput(result: { content: string; toolCalls: { id: string; name: string; arguments: string }[] }, sources: string[] = []) {
   const output: Record<string, unknown>[] = [];
+  const search = webSearchCall(sources);
+  if (search) output.push(search);
   if (result.content && !result.toolCalls.length) {
     output.push({
       id: `msg_${randomUUID()}`,

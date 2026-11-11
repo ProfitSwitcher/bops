@@ -2576,7 +2576,7 @@ async function turn(botId: string, chatId: string, opts: TurnOptions = {}): Prom
     const instructions = [
       persona(b, others),
       opts.outside ? "" : SEARCHING,
-      localOnly() && allowEgress() ? "Web search is available from this Mac. Use web_search for current facts, weather, prices, and news. Do not say that web search is offline." : "",
+      localOnly() && allowEgress() ? "Web search is available from this Mac. Use web_search for current facts, weather, prices, and news. A weather question's live reading is in that result: answer from it. web_fetch may open a URL from those results. Do not say that web search is offline." : "",
       localOnly() && !allowEgress() ? "Web search is off on this Mac until BOPS_ALLOW_EGRESS=1. If asked to look something up, say that, and do not pretend you searched." : "",
       localOnly() ? "To run a shell command on this Mac, call run_command. Do not say you will run it unless that tool has returned the output." : "",
       "If a tapback says it all (thanks, ok, sounds good), react instead of replying.",

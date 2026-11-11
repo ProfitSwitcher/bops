@@ -7,9 +7,47 @@ const UA =
 
 export type WebSearchHit = { title: string; url: string; snippet?: string };
 
+const WEATHER = /\b(weather|forecast|temperature)\b/i;
+
+/** "what's the weather in Missoula" -> "Missoula". Null when it isn't a weather question. */
+export function weatherPlace(query: string): string | null {
+  const q = query.trim();
+  if (!WEATHER.test(q)) return null;
+  const named =
+    q.match(/\b(?:weather|forecast|temperature)\s+(?:in|for|at|near)\s+([A-Za-z][^?]{1,60}?)(?:\s+(?:today|tomorrow|tonight|now|please))?\s*$/i) ??
+    q.match(/\b(?:in|for|at|near)\s+([A-Za-z][^?]{1,60}?)\b(?:\s+\S+){0,4}\s+(?:weather|forecast|temperature)\b/i);
+  const place = named?.[1]?.replace(/[?.!,]+$/g, "").trim();
+  return place || null;
+}
+
+/** A live reading from wttr.in. Null when the site doesn't answer. No API key. */
+export async function weatherNow(place: string, fetchImpl: typeof fetch = fetch): Promise<string | null> {
+  const url = `https://wttr.in/${encodeURIComponent(place)}?format=j1`;
+  let raw = "";
+  try {
+    raw = await getText(url, fetchImpl, { headers: { accept: "application/json" } });
+  } catch {
+    return null;
+  }
+  let data: { current_condition?: { temp_F?: string; temp_C?: string; humidity?: string; windspeedMiles?: string; weatherDesc?: { value?: string }[] }[]; nearest_area?: { areaName?: { value?: string }[]; region?: { value?: string }[]; country?: { value?: string }[] }[] };
+  try {
+    data = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const cur = data.current_condition?.[0];
+  if (!cur?.temp_F && !cur?.temp_C) return null;
+  const area = data.nearest_area?.[0];
+  const where = [area?.areaName?.[0]?.value, area?.region?.[0]?.value, area?.country?.[0]?.value].filter(Boolean).join(", ") || place;
+  const desc = cur.weatherDesc?.[0]?.value || "current conditions";
+  return `Live weather for ${where}: ${cur.temp_F ?? "?"}°F (${cur.temp_C ?? "?"}°C), ${desc}, humidity ${cur.humidity ?? "?"}%, wind ${cur.windspeedMiles ?? "?"} mph. Source: ${url}`;
+}
+
 export async function webSearch(query: string, fetchImpl: typeof fetch = fetch): Promise<string> {
   const q = query.trim();
   if (!q) return "No search query was given.";
+  const place = weatherPlace(q);
+  const live = place ? await weatherNow(place, fetchImpl) : null;
   const hits: WebSearchHit[] = [];
   const errors: string[] = [];
   try {
@@ -33,15 +71,17 @@ export async function webSearch(query: string, fetchImpl: typeof fetch = fetch):
   }
   const unique = dedupe(hits).slice(0, 8);
   if (!unique.length) {
+    if (live) return live;
     const why = errors.length ? ` (${errors.join("; ")})` : "";
     return `No web search results for ${JSON.stringify(q)}.${why}`;
   }
-  return unique
+  const list = unique
     .map((h, i) => {
       const snippet = h.snippet ? `\n   ${h.snippet}` : "";
       return `${i + 1}. ${h.title}\n   ${h.url}${snippet}`;
     })
     .join("\n");
+  return [live, list].filter(Boolean).join("\n\n");
 }
 
 function dedupe(hits: WebSearchHit[]): WebSearchHit[] {
